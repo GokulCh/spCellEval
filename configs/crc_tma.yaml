@@ -1,0 +1,129 @@
+# configs/crctma.yaml
+# ──────────────────────────────────────────────────────────────────────────
+# Unified dataset configuration for run_preprocess.py
+# ──────────────────────────────────────────────────────────────────────────
+dataset_name: "CRC_TMA"
+
+# ── 1. Raw data ingestion ─────────────────────────────────────────────────
+raw_data:
+  file_path: "data/raw/CRC_TMA/CRC_TMA_expression.csv"
+  format: "csv"   # options: csv | rds | h5ad | parquet
+
+# ── 2. Column mappings (raw name → standardised name) ────────────────────
+column_mappings:
+  cell_id:            "CellID"        # → Cell_ID in output
+  spatial_x:          "X"             # → x
+  spatial_y:          "Y"             # → y
+  image_id:           "File Name"     # → Image_ID  (e.g. 'reg001_A')
+  patient_id:         "patients"      # → Patient_ID
+  batch_id:           "TMA_AB"        # → batch_id  (e.g. 'A' / 'B')
+  ground_truth_label: "ClusterName"   # raw label → cell_type (level 3)
+
+# Extra metadata columns preserved verbatim in obs (not used as features)
+additional_obs:
+  - "Region"
+  - "groups"
+  - "spots"
+  - "neighborhood10"
+  - "neighborhood name"
+
+# ── 3. Protein marker channels ────────────────────────────────────────────
+# Full "Name:Cyc_N_ch_M" strings exactly as they appear in the raw CSV.
+# run_preprocess.py strips the ":Cyc_..." suffix for the output column name.
+protein_markers:
+  - "CD44 - stroma:Cyc_2_ch_2"
+  - "FOXP3 - regulatory T cells:Cyc_2_ch_3"
+  - "CD8 - cytotoxic T cells:Cyc_3_ch_2"
+  - "p53 - tumor suppressor:Cyc_3_ch_3"
+  - "GATA3 - Th2 helper T cells:Cyc_3_ch_4"
+  - "CD45 - hematopoietic cells:Cyc_4_ch_2"
+  - "T-bet - Th1 cells:Cyc_4_ch_3"
+  - "beta-catenin - Wnt signaling:Cyc_4_ch_4"
+  - "HLA-DR - MHC-II:Cyc_5_ch_2"
+  - "PD-L1 - checkpoint:Cyc_5_ch_3"
+  - "Ki67 - proliferation:Cyc_5_ch_4"
+  - "CD45RA - naive T cells:Cyc_6_ch_2"
+  - "CD4 - T helper cells:Cyc_6_ch_3"
+  - "CD21 - DCs:Cyc_6_ch_4"
+  - "MUC-1 - epithelia:Cyc_7_ch_2"
+  - "CD30 - costimulator:Cyc_7_ch_3"
+  - "CD2 - T cells:Cyc_7_ch_4"
+  - "Vimentin - cytoplasm:Cyc_8_ch_2"
+  - "CD20 - B cells:Cyc_8_ch_3"
+  - "LAG-3 - checkpoint:Cyc_8_ch_4"
+  - "Na-K-ATPase - membranes:Cyc_9_ch_2"
+  - "CD5 - T cells:Cyc_9_ch_3"
+  - "IDO-1 - metabolism:Cyc_9_ch_4"
+  - "Cytokeratin - epithelia:Cyc_10_ch_2"
+  - "CD11b - macrophages:Cyc_10_ch_3"
+  - "CD56 - NK cells:Cyc_10_ch_4"
+  - "aSMA - smooth muscle:Cyc_11_ch_2"
+  - "BCL-2 - apoptosis:Cyc_11_ch_3"
+  - "CD25 - IL-2 Ra:Cyc_11_ch_4"
+  - "CD11c - DCs:Cyc_12_ch_3"
+  - "PD-1 - checkpoint:Cyc_12_ch_4"
+  - "Granzyme B - cytotoxicity:Cyc_13_ch_2"
+  - "EGFR - signaling:Cyc_13_ch_3"
+  - "VISTA - costimulator:Cyc_13_ch_4"
+  - "CD15 - granulocytes:Cyc_14_ch_2"
+  - "ICOS - costimulator:Cyc_14_ch_4"
+  - "Synaptophysin - neuroendocrine:Cyc_15_ch_3"
+  - "GFAP - nerves:Cyc_16_ch_2"
+  - "CD7 - T cells:Cyc_16_ch_3"
+  - "CD3 - T cells:Cyc_16_ch_4"
+  - "Chromogranin A - neuroendocrine:Cyc_17_ch_2"
+  - "CD163 - macrophages:Cyc_17_ch_3"
+  - "CD45RO - memory cells:Cyc_18_ch_3"
+  - "CD68 - macrophages:Cyc_18_ch_4"
+  - "CD31 - vasculature:Cyc_19_ch_3"
+  - "Podoplanin - lymphatics:Cyc_19_ch_4"
+  - "CD34 - vasculature:Cyc_20_ch_3"
+  - "CD38 - multifunctional:Cyc_20_ch_4"
+  - "CD138 - plasma cells:Cyc_21_ch_3"
+  - "HOECHST1:Cyc_1_ch_1"
+  - "CDX2 - intestinal epithelia:Cyc_2_ch_4"
+  - "Collagen IV - bas. memb.:Cyc_12_ch_2"
+  - "CD194 - CCR4 chemokine R:Cyc_14_ch_3"
+  - "MMP9 - matrix metalloproteinase:Cyc_15_ch_2"
+  - "CD71 - transferrin R:Cyc_15_ch_4"
+  - "CD57 - NK cells:Cyc_17_ch_4"
+  - "MMP12 - matrix metalloproteinase:Cyc_21_ch_4"
+  - "DRAQ5:Cyc_23_ch_4"
+
+# ── 4. Morphology columns ─────────────────────────────────────────────────
+# CRC_TMA does not export morphology features from the segmentation pipeline.
+# Add column names here if they become available.
+morphology_features: []
+
+# ── 5. Normalisation / QC ─────────────────────────────────────────────────
+transformations:
+  arcsinh_transform:    true
+  cofactor:             5
+  qc_min_expression:    0
+
+# ── 6. Label harmonisation ────────────────────────────────────────────────
+# Maps raw ClusterName strings → harmonised cell_type names that exist in
+# cell_type_hierarchy.txt / cell_type_harmonization_labels.
+label_remap:
+  "B cells":              B_cell
+  "CD11c+ DCs":           Dendritic_cell
+  "CD3+ T cells":         T_cell
+  "CD4+ T cells":         CD4+_T_cell
+  "CD4+ T cells CD45RO+": CD4+_T_cell
+  "CD8+ T cells":         CD8+_T_cell
+  "NK cells":             NK_cell
+  "Tregs":                Treg
+  "granulocytes":         Neutrophil
+  "immune cells":         undefined
+  "lymphatics":           Lymphatic
+  "macrophages":          Macrophage
+  "plasma cells":         Plasma_cell
+  "smooth muscle":        SMA+_Fibroblast
+  "stroma":               Stroma
+  "tumor cells":          Cancer
+  "vasculature":          Endothelial
+
+# ── 7. Output ─────────────────────────────────────────────────────────────
+output:
+  processed_dir:    "data/processed/CRC_TMA"
+  output_filename:  "CRC_TMA_quantification.csv"

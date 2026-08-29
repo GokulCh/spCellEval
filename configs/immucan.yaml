@@ -1,0 +1,101 @@
+# configs/immucan.yaml
+# ──────────────────────────────────────────────────────────────────────────
+# Unified dataset configuration for run_preprocess.py
+# ──────────────────────────────────────────────────────────────────────────
+dataset_name: "IMMUcan"
+
+# ── 1. Raw data ingestion ─────────────────────────────────────────────────
+raw_data:
+  file_path: "data/raw/IMMUcan/IMMUcan_combined.csv"
+  format: "csv"   # options: csv | rds | h5ad | parquet
+                  # rds/h5ad are pre-converted to CSV via the R Markdown
+                  # scripts in src/preprocessing/datasets/ before reaching
+                  # this pipeline.
+
+# ── 2. Column mappings (raw name → standardised name) ────────────────────
+column_mappings:
+  cell_id:            "ObjectNumber"   # → Cell_ID in output
+  spatial_x:          "Pos_X"          # → x
+  spatial_y:          "Pos_Y"          # → y
+  image_id:           "image"          # → Image_ID
+  patient_id:         "sample_id"      # best proxy; BatchId is the slide
+  batch_id:           "BatchId"        # → batch_id
+  ground_truth_label: "celltypes"      # raw label → cell_type (level 3)
+
+# ── 3. Protein marker channels (columns kept as AnnData.X / marker block) ─
+protein_markers:
+  - MPO
+  - HistoneH3
+  - SMA
+  - CD16
+  - CD38
+  - HLADR
+  - CD27
+  - CD15
+  - CD45RA
+  - CD163
+  - B2M
+  - CD20
+  - CD68
+  - Ido1
+  - CD3
+  - LAG3
+  - CD11c
+  - PD1
+  - PDGFRb
+  - CD7
+  - GrzB
+  - PDL1
+  - TCF7
+  - CD45RO
+  - FOXP3
+  - ICOS
+  - CD8a
+  - CarbonicAnhydrase
+  - CD33
+  - Ki67
+  - VISTA
+  - CD40
+  - CD4
+  - CD14
+  - Ecad
+  - CD303
+  - CD206
+  - cleavedPARP
+  - DNA1
+  - DNA2
+
+# ── 4. Morphology columns kept in metadata block ──────────────────────────
+morphology_features:
+  - area
+  - major_axis_length
+  - minor_axis_length
+  - eccentricity
+  - width_px
+  - height_px
+
+# ── 5. Normalisation / QC ─────────────────────────────────────────────────
+transformations:
+  arcsinh_transform:    true
+  cofactor:             5
+  qc_min_expression:    0   # drop cells where ALL marker values < threshold
+
+# ── 6. Label harmonisation ────────────────────────────────────────────────
+#  run_preprocess.py applies these renames BEFORE deriving hierarchy levels.
+#  Mappings: raw label (in ground_truth_label column) → harmonised cell_type
+label_remap:
+  Tumor:    Cancer
+  Mural:    Stroma
+  CD8:      CD8+_T_cell
+  MacCD163: M2_Macrophage
+  CD4:      CD4+_T_cell
+  plasma:   Plasma_cell
+  DC:       Dendritic_cell
+  B:        B_cell
+  NK:       NK_cell
+  pDC:      Plasmacytoid_dendritic_cell
+
+# ── 7. Output ─────────────────────────────────────────────────────────────
+output:
+  processed_dir:    "data/processed/IMMUcan"
+  output_filename:  "IMMUcan_quantification.csv"

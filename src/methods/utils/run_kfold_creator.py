@@ -25,15 +25,15 @@ def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_co
 
     # Loop through datasets
     if dataset_name is None:
-        for dataset in os.listdir(os.path.join(main_dir, 'datasets')):
+        for dataset in os.listdir(os.path.join(main_dir, 'data', 'processed')):
             if dataset.startswith('.'):
                 continue
-            if not os.path.isdir(os.path.join(main_dir,'datasets',dataset)):
+            if not os.path.isdir(os.path.join(main_dir, 'data', 'processed', dataset)):
                 continue
 
             print(f"Processing dataset {dataset}")
-            dataset_path = os.path.join(main_dir, 'datasets', dataset, f'quantification/processed/{dataset}_quantification.csv')
-            save_dir = os.path.join(main_dir, 'datasets', dataset, 'quantification/processed')
+            dataset_path = os.path.join(main_dir, 'data', 'processed', dataset, f'{dataset}_quantification.csv')
+            save_dir = os.path.join(main_dir, 'data', 'processed', dataset)
             data_handler = DataSetHandler(dataset_path, random_state=random_state)
             data_handler.preprocess(dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns = drop_columns, drop_non_numerical = drop_non_numerical)
             data_handler.createFolds(n_splits, method, batch_identifier_column, group_shuffle_split_size, swap_train_test)
@@ -41,10 +41,10 @@ def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_co
             data_handler.save_folds(save_dir)
             data_handler.create_validation_set_from_fold(save_path=os.path.join(save_dir, f'kfolds_{method}_{granularity_level}'), percentage_validation=percentage_validation)
     else:
-        if os.path.isdir(os.path.join(main_dir, 'datasets', dataset_name)):
+        if os.path.isdir(os.path.join(main_dir, 'data', 'processed', dataset_name)):
             print(f"Processing {dataset_name}")
-            dataset_path = os.path.join(main_dir, 'datasets', dataset_name, f'quantification/processed/{dataset_name}_quantification.csv')
-            save_dir = os.path.join(main_dir, 'datasets', dataset_name, 'quantification/processed')
+            dataset_path = os.path.join(main_dir, 'data', 'processed', dataset_name, f'{dataset_name}_quantification.csv')
+            save_dir = os.path.join(main_dir, 'data', 'processed', dataset_name)
             data_handler = DataSetHandler(dataset_path, random_state=random_state)
             data_handler.preprocess(dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns = drop_columns, drop_non_numerical = drop_non_numerical)
             data_handler.createFolds(n_splits, method, batch_identifier_column, group_shuffle_split_size, swap_train_test)
