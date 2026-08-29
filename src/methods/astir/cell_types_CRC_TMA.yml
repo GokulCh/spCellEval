@@ -1,0 +1,38 @@
+cell_types:
+  Cancer:
+    - PanCK
+  Stroma:
+    - SMA
+    - Vimentin
+  SMA+_Fibroblast:
+    - SMA
+  CD4+_T_cell:
+    - CD3
+    - CD4
+  CD8+_T_cell:
+    - CD3
+    - CD8
+  Treg:
+    - FOXP3
+    - CD4
+    - CD3
+  T_cell:
+    - CD3
+  NK_cell:
+    - CD56
+  B_cell:
+    - CD20
+  Neutrophil:
+    - CD15
+  Macrophage:
+    - CD163
+    - CD68
+  Dendritic_cell:
+    - CD11c
+    - HLADR
+  Plasma_cell:
+    - CD138
+  Endothelial:
+    - CD31
+  Lymphatic:
+    - Podoplanin

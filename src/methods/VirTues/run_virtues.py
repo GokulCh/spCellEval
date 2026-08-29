@@ -501,7 +501,7 @@ def build_parser():
     for m in ['extract','supervised','leiden','all']:
         p = sub.add_parser(m, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         p.add_argument('--dataset',     choices=['immucan','chl'], required=True)
-        p.add_argument('--virtues-dir', default='/home/juliaoesterle/VirTues')
+        p.add_argument('--virtues-dir', default=str(Path(__file__).resolve().parent))
         p.add_argument('--device',      default='cuda:1')
         p.add_argument('--crop-size',   type=int, default=None,
                        help='Override crop size (None=128 from config; 64=IMMUcan best)')

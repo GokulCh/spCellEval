@@ -1,0 +1,16 @@
+cell_type,PanCK,SMA,Vimentin,CD3,CD4,CD8,FOXP3,CD20,CD56,CD15,CD163,CD68,CD11c,HLADR,CD138,CD31,Podoplanin
+Cancer,1,,,,,,,,,,,,,,,,
+Stroma,,1,1,,,,,,,,,,,,,,
+SMA+_Fibroblast,,1,,,,,,,,,,,,,,,
+CD4+_T_cell,,,,1,1,,,,,,,,,,,,
+CD8+_T_cell,,,,1,,1,,,,,,,,,,,
+Treg,,,,1,1,,1,,,,,,,,,,
+T_cell,,,,1,,,,,,,,,,,,,
+NK_cell,,,,,,,,,1,,,,,,,,
+B_cell,,,,,,,,1,,,,,,,,,
+Neutrophil,,,,,,,,,,1,,,,,,,
+Macrophage,,,,,,,,,,,1,1,,,,,
+Dendritic_cell,,,,,,,,,,,,,1,1,,,
+Plasma_cell,,,,,,,,,,,,,,,1,,
+Endothelial,,,,,,,,,,,,,,,,1,
+Lymphatic,,,,,,,,,,,,,,,,,1

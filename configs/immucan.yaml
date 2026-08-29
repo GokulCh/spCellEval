@@ -4,6 +4,12 @@
 # ──────────────────────────────────────────────────────────────────────────
 dataset_name: "IMMUcan"
 
+# ── 0. ETL harmonization (Module 1) ───────────────────────────────────────
+etl:
+  harmonize_channels: true
+  strip_acquisition_flags: true
+  extra_strip_columns: []
+
 # ── 1. Raw data ingestion ─────────────────────────────────────────────────
 raw_data:
   file_path: "data/raw/IMMUcan/IMMUcan_combined.csv"
@@ -77,6 +83,7 @@ morphology_features:
 # ── 5. Normalisation / QC ─────────────────────────────────────────────────
 transformations:
   arcsinh_transform:    true
+  auto_detect_scale:    true
   cofactor:             5
   qc_min_expression:    0   # drop cells where ALL marker values < threshold
 
@@ -95,7 +102,19 @@ label_remap:
   NK:       NK_cell
   pDC:      Plasmacytoid_dendritic_cell
 
+# ── 8. Pseudo-labeling (Stage 2) ──────────────────────────────────────────
+pseudo_labeling:
+  decision_matrix: "src/methods/TACIT/IMMUcan_decision_matrix_level3.csv"
+  marker_threshold: 0.5        # post-arcsinh gating cutoff for signature rules
+  min_score: 1.0               # 1.0 = all marker rules must pass
+  tacit:
+    r: 10
+    p: 10
+    iterations: 5
+
 # ── 7. Output ─────────────────────────────────────────────────────────────
 output:
   processed_dir:    "data/processed/IMMUcan"
   output_filename:  "IMMUcan_quantification.csv"
+  formats: [csv, parquet, h5ad]
+  export_features_only: true

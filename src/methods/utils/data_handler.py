@@ -45,7 +45,11 @@ class DataSetHandler:
         if impute_value is not None:
             self.data.fillna(impute_value, inplace=True)
         if drop_columns is not None:
-            self.data.drop(columns=drop_columns, inplace=True)
+            if isinstance(drop_columns, str):
+                drop_columns = [drop_columns]
+            drop_columns = [c for c in drop_columns if c in self.data.columns]
+            if drop_columns:
+                self.data.drop(columns=drop_columns, inplace=True)
 
         label_encoder = LabelEncoder()
         self.Y = label_encoder.fit_transform(self.data[phenotype_column])

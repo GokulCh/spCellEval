@@ -4,6 +4,12 @@
 # ──────────────────────────────────────────────────────────────────────────
 dataset_name: "CRC_TMA"
 
+# ── 0. ETL harmonization (Module 1) ───────────────────────────────────────
+etl:
+  harmonize_channels: true
+  strip_acquisition_flags: true
+  extra_strip_columns: []
+
 # ── 1. Raw data ingestion ─────────────────────────────────────────────────
 raw_data:
   file_path: "data/raw/CRC_TMA/CRC_TMA_expression.csv"
@@ -98,6 +104,7 @@ morphology_features: []
 # ── 5. Normalisation / QC ─────────────────────────────────────────────────
 transformations:
   arcsinh_transform:    true
+  auto_detect_scale:    true
   cofactor:             5
   qc_min_expression:    0
 
@@ -123,7 +130,17 @@ label_remap:
   "tumor cells":          Cancer
   "vasculature":          Endothelial
 
+# ── 8. Pseudo-labeling (Stage 2) ──────────────────────────────────────────
+# CRC_TMA has no bundled TACIT matrix yet; signature rules can use a custom
+# decision matrix once created.  Ground-truth stripping works out of the box.
+pseudo_labeling:
+  decision_matrix: "src/methods/TACIT/CRC_TMA_decision_matrix_level3.csv"
+  marker_threshold: 0.5
+  min_score: 1.0
+
 # ── 7. Output ─────────────────────────────────────────────────────────────
 output:
   processed_dir:    "data/processed/CRC_TMA"
   output_filename:  "CRC_TMA_quantification.csv"
+  formats: [csv, parquet, h5ad]
+  export_features_only: true

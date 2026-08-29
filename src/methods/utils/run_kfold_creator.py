@@ -1,20 +1,63 @@
 import argparse
 import os
+import sys
+from pathlib import Path
 from data_handler import DataSetHandler
 
-def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns, drop_non_numerical, n_splits, method, group_shuffle_split_size, swap_train_test, random_state, percentage_validation):
+# Ground-truth stripping (Stage 2)
+_STAGE2_DIR = Path(__file__).resolve().parents[2] / "pseudo_labeling"
+if str(_STAGE2_DIR) not in sys.path:
+    sys.path.insert(0, str(_STAGE2_DIR))
+from ground_truth import DEFAULT_EVAL_DROP_COLUMNS  # noqa: E402
+
+
+def _resolve_drop_columns(drop_columns, strip_labels: bool, phenotype_column: str = "cell_type"):
+    """Merge explicit drop_columns with automatic label stripping.
+
+    The *phenotype_column* is kept in the DataFrame during preprocessing so it
+    can be encoded as ``Y``; ``DataSetHandler.preprocess`` removes it from ``X``.
+    """
+    if not strip_labels:
+        return drop_columns
+
+    auto_drop = [
+        c for c in DEFAULT_EVAL_DROP_COLUMNS
+        if c not in ("Cell_ID", "x", "y", "batch_id", phenotype_column)
+    ]
+    if drop_columns is None:
+        return auto_drop
+
+    if isinstance(drop_columns, str):
+        drop_columns_clean = drop_columns.strip()
+        if "," in drop_columns_clean:
+            explicit = [s.strip() for s in drop_columns_clean.split(",")]
+        else:
+            explicit = [drop_columns_clean]
+    else:
+        explicit = list(drop_columns)
+
+    merged = list(dict.fromkeys(explicit + auto_drop))
+    return merged
+
+
+def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns, drop_non_numerical, n_splits, method, group_shuffle_split_size, swap_train_test, random_state, percentage_validation, strip_labels=False):
     """
     This function executes the DataSetHandler class to create cleaned kfolds and labels including translation csvs.
     """    
     if impute_value is not None:
         impute_value = float(impute_value)
-    
-    if drop_columns is not None:
+
+    drop_columns = _resolve_drop_columns(drop_columns, strip_labels, phenotype_column)
+
+    if drop_columns is not None and isinstance(drop_columns, str):
         drop_columns_clean = drop_columns.strip()
         if ',' in drop_columns_clean:
             drop_columns = [s.strip() for s in drop_columns_clean.split(',')]
         else:
             drop_columns = drop_columns_clean
+
+    if strip_labels:
+        print(f"strip_labels=True — auto-dropping label columns: {drop_columns}")
 
     if phenotype_column == 'cell_type':
         granularity_level = 'level3'
@@ -139,6 +182,15 @@ def main():
         default = 42,
     )
     parser.add_argument(
+        '--strip_labels',
+        action='store_true',
+        help=(
+            'Automatically drop ground-truth label columns (cell_type, level_1/2, '
+            'cell_labels) from feature matrices to prevent data leakage. '
+            'Stage 2 ground-truth management.'
+        ),
+    )
+    parser.add_argument(
         '--percentage_validation',
         type = float,
         help = 'percentage of data to be used as validation set. Default is 0.15',
@@ -149,7 +201,7 @@ def main():
     run_fold_creation(args.main_dir, args.dataset_name, args.dropna, args.impute_value, args.phenotype_column,
                         args.batch_identifier_column, args.drop_columns, args.drop_non_numerical, args.n_splits,
                         args.method, args.group_shuffle_split_size, args.swap_train_test, args.random_state,
-                        args.percentage_validation
+                        args.percentage_validation, args.strip_labels
                         )
     print("Done.")
 if __name__ == '__main__':

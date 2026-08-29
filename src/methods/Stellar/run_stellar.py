@@ -61,7 +61,7 @@ import anndata
 
 BASE = Path("/home/juliaoesterle/data/phenotyping_benchmark")
 
-# IMMUcan 
+# IMMUcan paths (overridable via configure_paths())
 IMMUCAN_DIR        = BASE / "IMMUcan"
 IMMUCAN_IMAGE_DIR  = IMMUCAN_DIR / "CellTypes" / "data" / "images"
 IMMUCAN_LABEL_DIR  = IMMUCAN_DIR / "CellTypes" / "cells2labels"
@@ -108,6 +108,40 @@ CHL_EXCLUDE_MARKERS = {"dsDNA", "Histone H3", "anti-H2AX", "pSLP-76", "SLP-76"}
 CHL_EXCLUDE_LABELS  = {"undefined", "unedfined"}   # note dataset typo
 
 
+def configure_paths(
+    dataset: str,
+    data_base_dir: Path,
+    *,
+    folds_json: Path | None = None,
+    quant_csv: Path | None = None,
+) -> None:
+    """Override hardcoded dataset paths for portable benchmark execution."""
+    global IMMUCAN_DIR, IMMUCAN_IMAGE_DIR, IMMUCAN_LABEL_DIR, IMMUCAN_SEG_DIR
+    global IMMUCAN_FOLDS_JSON, CHL_DIR, CHL_QUANT_CSV, CHL_FOLD_JSON
+    global CHL_IMG_DIR, CHL_SEG_BASE
+
+    base = data_base_dir.resolve()
+    if dataset == "immucan":
+        IMMUCAN_DIR = base
+        IMMUCAN_IMAGE_DIR = base / "CellTypes" / "data" / "images"
+        IMMUCAN_LABEL_DIR = base / "CellTypes" / "cells2labels"
+        IMMUCAN_SEG_DIR = base / "segmentation"
+        if folds_json:
+            IMMUCAN_FOLDS_JSON = folds_json
+        elif (base / "CellTypes" / "folds.json").is_file():
+            IMMUCAN_FOLDS_JSON = base / "CellTypes" / "folds.json"
+        elif (base / "folds.json").is_file():
+            IMMUCAN_FOLDS_JSON = base / "folds.json"
+    else:
+        CHL_DIR = base
+        CHL_QUANT_CSV = quant_csv or (base / "quantification" / "processed" / "cHL_2_MIBI_quantification.csv")
+        CHL_FOLD_JSON = folds_json or (
+            base / "quantification" / "processed" / "kfolds_StratifiedGroupKFold_level3" / "fold_indices.json"
+        )
+        CHL_IMG_DIR = base / "raw_images" / "multistack_tiffs"
+        CHL_SEG_BASE = base / "segmentation"
+
+
 
 class StellarModel(nn.Module):
     def __init__(self, input_dim: int, hid_dim: int, num_classes: int):
@@ -125,18 +159,43 @@ class StellarModel(nn.Module):
 
 #Graph Construction
 
-def get_edges(pos: np.ndarray, distance_threshold: float) -> np.ndarray:
-    """Distance-threshold spatial graph. Returns edge_index (2, E)."""
+def get_edges(
+    pos: np.ndarray,
+    distance_threshold: float,
+    method: str = "distance",
+    k: int = 12,
+) -> np.ndarray:
+    """Spatial graph edges. Returns edge_index (2, E)."""
     if len(pos) == 0:
         return np.zeros((2, 0), dtype=np.int64)
-    diff  = pos[:, None, :] - pos[None, :, :]    # (N, N, 2)
-    dists = np.linalg.norm(diff, axis=-1)         # (N, N)
+    if method == "knn":
+        from scipy.spatial import cKDTree
+        tree = cKDTree(pos)
+        k_query = min(k + 1, len(pos))
+        _, indices = tree.query(pos, k=k_query)
+        edges_i, edges_j = [], []
+        for i in range(len(pos)):
+            neigh = indices[i] if indices.ndim > 1 else [indices[i]]
+            for j in neigh:
+                if int(j) == i:
+                    continue
+                edges_i.append(i)
+                edges_j.append(int(j))
+        return np.array([edges_i, edges_j], dtype=np.int64)
+
+    diff  = pos[:, None, :] - pos[None, :, :]
+    dists = np.linalg.norm(diff, axis=-1)
     adj   = dists <= distance_threshold
     np.fill_diagonal(adj, False)
-    return np.array(np.where(adj), dtype=np.int64)  # (2, E)
+    return np.array(np.where(adj), dtype=np.int64)
 
 
-def make_graph_list(adata: anndata.AnnData, distance_threshold: float) -> List[Data]:
+def make_graph_list(
+    adata: anndata.AnnData,
+    distance_threshold: float,
+    graph_method: str = "distance",
+    k_neighbors: int = 12,
+) -> List[Data]:
     """One graph per image — identical to run_stellar_immucan.py."""
     graphs = []
     for sample_id in tqdm(adata.obs["sample_id"].cat.categories,
@@ -146,7 +205,7 @@ def make_graph_list(adata: anndata.AnnData, distance_threshold: float) -> List[D
         pos      = adata.obs[sel][["Pos_X", "Pos_Y"]].values.astype(np.float32)
         exprs    = adata.layers["exprs"][sel].astype(np.float32)
         y        = adata.obs[sel]["cell_label_idx"].values.astype(np.int64)
-        edges    = get_edges(pos, distance_threshold)
+        edges    = get_edges(pos, distance_threshold, method=graph_method, k=k_neighbors)
         graphs.append(Data(
             x          = torch.FloatTensor(exprs),
             edge_index = torch.LongTensor(edges),
@@ -519,8 +578,14 @@ def run_fold(
     device = torch.device(args.device)
 
     # graphs
-    train_graphs = make_graph_list(train_adata, args.distance_threshold)
-    test_graphs  = make_graph_list(test_adata,  args.distance_threshold)
+    train_graphs = make_graph_list(
+        train_adata, args.distance_threshold,
+        graph_method=args.graph_method, k_neighbors=12,
+    )
+    test_graphs  = make_graph_list(
+        test_adata, args.distance_threshold,
+        graph_method=args.graph_method, k_neighbors=12,
+    )
 
     # model
     n_features = train_adata.X.shape[1]
@@ -644,7 +709,23 @@ def main():
     parser.add_argument("--node-batch-size", type=int,   default=512)
     parser.add_argument("--device",          type=str,   default="cuda:0")
     parser.add_argument("--output-dir",      type=str,   default=None)
+    parser.add_argument("--data-base-dir",   type=str,   default=None,
+                        help="Root data directory (overrides hardcoded paths).")
+    parser.add_argument("--folds-json",      type=str,   default=None,
+                        help="Optional folds.json override for IMMUcan/cHL.")
+    parser.add_argument("--quant-csv",       type=str,   default=None,
+                        help="Optional quantification CSV for cHL dataset.")
+    parser.add_argument("--graph-method",    choices=["distance", "knn"], default="distance",
+                        help="Spatial graph construction strategy.")
     args = parser.parse_args()
+
+    if args.data_base_dir:
+        configure_paths(
+            args.dataset,
+            Path(args.data_base_dir),
+            folds_json=Path(args.folds_json) if args.folds_json else None,
+            quant_csv=Path(args.quant_csv) if args.quant_csv else None,
+        )
 
     dt_str     = f"dt{args.distance_threshold:.2f}".replace(".", "_")
     default_out = IMMUCAN_OUTPUT if args.dataset == "immucan" else CHL_OUTPUT

@@ -112,9 +112,13 @@ def main():
     ap.add_argument("--fold", type=int, default=None, help="run a single fold (default: all)")
     ap.add_argument("--n_runs", type=int, default=None, help="ensemble size (default: config)")
     ap.add_argument("--results_dir", default=None, help="where predictions_{k}.csv go")
+    ap.add_argument("--output_root", default=None,
+                    help="Override prepared CellTypes data root from config.")
     args = ap.parse_args()
 
     cfg = load_config(args.config, args.dataset)
+    if args.output_root:
+        cfg["output_root"] = args.output_root
     n_runs = args.n_runs or cfg.get("n_runs", 1)
 
     data_root = Path(cfg["output_root"])

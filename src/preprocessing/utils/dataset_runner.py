@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,19 +40,23 @@ import numpy as np
 import pandas as pd
 
 from label_hierarchy import add_hierarchy_columns
+from channel_harmonization import (
+    clean_channel_name,
+    harmonize_column_names,
+    strip_acquisition_columns,
+    auto_detect_markers,
+)
+from scale_detection import needs_arcsinh_transform
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helper: strip cycle / channel suffixes from CRC-TMA-style marker names
-# e.g.  "CD8 - cytotoxic T cells:Cyc_3_ch_2"  →  "CD8 - cytotoxic T cells"
-# ---------------------------------------------------------------------------
+# Re-export for backward compatibility
 _CYC_SUFFIX_RE = re.compile(r":Cyc_\d+_ch_\d+$", re.IGNORECASE)
 
 
 def _clean_marker_name(raw: str) -> str:
     """Strip the ':Cyc_N_ch_M' suffix if present."""
-    return _CYC_SUFFIX_RE.sub("", raw).strip()
+    return clean_channel_name(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,7 @@ class DatasetRunner:
     def run(self) -> pd.DataFrame:
         """Execute the full pipeline and return the processed DataFrame."""
         self._load()
+        self._harmonize_and_strip()
         self._rename_columns()
         self._apply_label_remap()
         self._arcsinh_transform()
@@ -113,19 +119,24 @@ class DatasetRunner:
         self._reorder_columns()
         return self.df
 
+    def _harmonize_and_strip(self) -> None:
+        """Channel harmonization + acquisition metadata stripping (Module 1)."""
+        etl = self.cfg.get("etl", {})
+        if etl.get("harmonize_channels", True):
+            self.df = harmonize_column_names(self.df)
+        if etl.get("strip_acquisition_flags", True):
+            extra = etl.get("extra_strip_columns", [])
+            self.df = strip_acquisition_columns(self.df, extra_strip=extra)
+        # Auto-detect markers when config list is empty
+        if not self.cfg.get("protein_markers"):
+            detected = auto_detect_markers(self.df)
+            self.cfg["protein_markers"] = detected
+            logger.info("Auto-detected %d protein marker columns.", len(detected))
+
     def save(self, df: Optional[pd.DataFrame] = None) -> Path:
-        """Write the processed DataFrame to the configured output path.
+        """Write the processed DataFrame to configured output format(s).
 
-        Parameters
-        ----------
-        df:
-            DataFrame to save.  If ``None``, uses ``self.df`` (i.e. the
-            result of the most recent ``run()`` call).
-
-        Returns
-        -------
-        Path
-            Absolute path of the written file.
+        Returns the primary CSV path for backward compatibility.
         """
         if df is not None:
             self.df = df
@@ -138,11 +149,58 @@ class DatasetRunner:
 
         dataset_name = self.cfg.get("dataset_name", "dataset")
         filename = out_cfg.get("output_filename", f"{dataset_name}_quantification.csv")
-        out_path = out_dir / filename
+        formats = out_cfg.get("formats", ["csv"])
+        primary_path = out_dir / filename
 
-        self.df.to_csv(out_path, index=False)
-        logger.info("Saved %d × %d to %s", *self.df.shape, out_path)
-        return out_path
+        if "csv" in formats:
+            self.df.to_csv(primary_path, index=False)
+            logger.info("Saved CSV %d x %d to %s", *self.df.shape, primary_path)
+        if "parquet" in formats:
+            parquet_path = primary_path.with_suffix(".parquet")
+            self.df.to_parquet(parquet_path, index=False)
+            logger.info("Saved Parquet to %s", parquet_path)
+        if "h5ad" in formats:
+            h5ad_path = primary_path.with_suffix(".h5ad")
+            self._save_h5ad(h5ad_path)
+            logger.info("Saved H5AD to %s", h5ad_path)
+
+        return primary_path
+
+    def _save_h5ad(self, path: Path) -> None:
+        """Write markers as AnnData X with metadata in obs."""
+        import anndata
+
+        marker_block = [c for c in self._marker_cols if c in self.df.columns]
+        if not marker_block:
+            logger.warning("No marker columns for H5AD export; skipping.")
+            return
+        X = self.df[marker_block].values
+        obs = self.df.drop(columns=marker_block, errors="ignore")
+        adata = anndata.AnnData(X=X, obs=obs.reset_index(drop=True))
+        adata.var_names = marker_block
+        adata.write_h5ad(path)
+
+    def export_features_only(self) -> tuple[Path, Path]:
+        """Write features-only matrix and labels sidecar (Stage 2 leakage prevention)."""
+        if self.df is None:
+            raise RuntimeError("Call run() before export_features_only().")
+
+        _pseudo_dir = self.root / "src" / "pseudo_labeling"
+        if str(_pseudo_dir) not in sys.path:
+            sys.path.insert(0, str(_pseudo_dir))
+        from ground_truth import strip_ground_truth  # noqa: WPS433
+
+        features, labels = strip_ground_truth(self.df)
+        out_cfg = self.cfg.get("output", {})
+        out_dir = self.root / out_cfg.get("processed_dir", "data/processed")
+        dataset_name = self.cfg.get("dataset_name", "dataset")
+        features_path = out_dir / f"{dataset_name}_features_only.csv"
+        labels_path = out_dir / f"{dataset_name}_features_only_labels_sidecar.csv"
+
+        features.to_csv(features_path, index=False)
+        labels.to_csv(labels_path, index=False)
+        logger.info("Features-only export: %s | labels: %s", features_path, labels_path)
+        return features_path, labels_path
 
     # ------------------------------------------------------------------
     # Pipeline steps (private)
@@ -260,15 +318,15 @@ class DatasetRunner:
         )
 
     def _arcsinh_transform(self) -> None:
-        """Apply arcsinh(x / cofactor) to all protein marker columns."""
+        """Apply arcsinh(x / cofactor) when data looks like raw counts."""
         transforms = self.cfg.get("transformations", {})
         if not transforms.get("arcsinh_transform", True):
             return
 
         cofactor = float(transforms.get("cofactor", 5))
         qc_min   = float(transforms.get("qc_min_expression", 0))
+        auto_detect = transforms.get("auto_detect_scale", True)
 
-        # Only transform columns that actually exist in the DataFrame
         present = [c for c in self._marker_cols if c in self.df.columns]
         missing = [c for c in self._marker_cols if c not in self.df.columns]
         if missing:
@@ -283,8 +341,13 @@ class DatasetRunner:
 
         marker_data = self.df[present].apply(pd.to_numeric, errors="coerce")
 
+        if auto_detect and not needs_arcsinh_transform(marker_data):
+            logger.info(
+                "Auto scale detection: marker values appear already transformed; skipping arcsinh."
+            )
+            return
+
         if qc_min > 0:
-            # Drop cells where every marker is below the QC threshold
             mask = (marker_data >= qc_min).any(axis=1)
             n_dropped = (~mask).sum()
             if n_dropped:

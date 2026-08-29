@@ -1,0 +1,64 @@
+# configs/benchmark.yaml
+# Stage 3 — unified benchmark runner configuration
+
+defaults:
+  kfold_method: StratifiedKFold
+  granularity: level3
+  phenotype_column: cell_type
+  batch_column: batch_id
+  strip_labels: true
+  n_splits: 5
+  spatial_smooth: true
+  spatial_k_neighbors: 15
+  pipeline:
+    strip_labels: true
+    pseudo_label: false
+    pseudo_label_method: signature
+    graph_method: both
+
+datasets:
+
+  IMMUcan:
+    config: configs/immucan.yaml
+    image_data_dir: data/raw/IMMUcan
+    artifacts:
+      decision_matrix_scyan: src/methods/scyan/IMMUcan_decision_matrix_level3.csv
+      decision_matrix_tacit: src/methods/TACIT/IMMUcan_decision_matrix_level3.csv
+      decision_matrix_astir: src/methods/astir/cell_types_IMMUcan.yml
+      celllens_script: src/methods/CellLens/IMMUcan_LITE_CellLENS.py
+    methods:
+      - random_forest
+      - xgboost
+      - logistic_regression
+      - leiden
+      - flowsom
+      - phenograph
+      - signature
+      - scyan
+      - tacit
+      - astir
+      - cellsighter
+      - stellar
+      - virtues_supervised
+
+  CRC_TMA:
+    config: configs/crc_tma.yaml
+    batch_column: batch_id
+    image_data_dir: data/raw/CRC_TMA
+    artifacts:
+      decision_matrix_scyan: src/methods/scyan/CRC_TMA_decision_matrix_level3.csv
+      decision_matrix_tacit: src/methods/TACIT/CRC_TMA_decision_matrix_level3.csv
+      decision_matrix_astir: src/methods/astir/cell_types_CRC_TMA.yml
+    methods:
+      - random_forest
+      - xgboost
+      - logistic_regression
+      - leiden
+      - flowsom
+      - phenograph
+      - signature
+      - scyan
+      - tacit
+      - astir
+      - cellsighter
+      - stellar

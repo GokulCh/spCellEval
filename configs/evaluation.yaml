@@ -1,0 +1,15 @@
+# configs/evaluation.yaml
+# Stage 4 — evaluation configuration
+
+defaults:
+  levels: [level1, level2, level3]
+  hierarchy: src/evaluation/cell_type_hierarchy.txt
+  always_compute_unsupervised: true
+
+datasets:
+  IMMUcan:
+    methods: null
+    quant_config: configs/immucan.yaml
+  CRC_TMA:
+    methods: null
+    quant_config: configs/crc_tma.yaml

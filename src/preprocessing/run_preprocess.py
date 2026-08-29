@@ -152,6 +152,9 @@ def run_one(
 
     out_path = runner.save(df)
 
+    if cfg.get("output", {}).get("export_features_only", True):
+        runner.export_features_only()
+
     if not out_path.exists():
         raise FileNotFoundError(f"Validation failed: Output file was not created at {out_path}")
 
