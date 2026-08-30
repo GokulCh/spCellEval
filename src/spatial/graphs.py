@@ -20,9 +20,20 @@ def build_knn_graph(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build undirected k-NN graph. Returns ``(edge_index [2,E], distances [E])``."""
     coords = np.column_stack([x, y])
+    if len(coords) <= 1:
+        empty = np.zeros((2, 0), dtype=np.int64)
+        return empty, np.array([])
+
     tree = cKDTree(coords)
     k_query = min(k + 1, len(coords))
     dists, indices = tree.query(coords, k=k_query)
+
+    if k_query <= 1:
+        empty = np.zeros((2, 0), dtype=np.int64)
+        return empty, np.array([])
+
+    dists = np.atleast_2d(dists)
+    indices = np.atleast_2d(indices)
 
     edges_i, edges_j, edge_d = [], [], []
     for i in range(len(coords)):

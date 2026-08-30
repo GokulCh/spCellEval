@@ -86,10 +86,11 @@ def run_pipeline(
     pseudo_label: bool = False,
     pseudo_method: str = "signature",
     unlabeled: bool = False,
+    benchmark_config: Optional[Path] = None,
     root: Path = _REPO,
 ) -> dict:
     """Execute the full benchmark pipeline for one dataset."""
-    bench_cfg_path = root / "configs" / "benchmark.yaml"
+    bench_cfg_path = (benchmark_config or (root / "configs" / "benchmark.yaml")).resolve()
     with bench_cfg_path.open("r", encoding="utf-8") as fh:
         bench_cfg = yaml.safe_load(fh) or {}
 
@@ -170,6 +171,7 @@ def run_pipeline(
             str(_SRC / "benchmark" / "run_benchmark.py"),
             "--dataset", dataset,
             "--root_dir", str(root),
+            "--benchmark_config", str(bench_cfg_path),
             "--no_spatial_smooth",
         ]
         if methods:
@@ -267,6 +269,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clinical/unannotated mode: skip GT ingest & k-folds; run signature/scyan/leiden.",
     )
     p.add_argument("--recreate_kfolds", action="store_true")
+    p.add_argument(
+        "--benchmark_config",
+        type=Path,
+        default=None,
+        help="Benchmark YAML (default: configs/benchmark.yaml).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -293,6 +301,7 @@ def main() -> None:
         pseudo_label=args.pseudo_label,
         pseudo_method=args.pseudo_method,
         unlabeled=args.unlabeled,
+        benchmark_config=args.benchmark_config,
         root=args.root_dir.resolve(),
     )
 

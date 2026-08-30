@@ -1,0 +1,34 @@
+# Fast smoke-test benchmark — mirrors CRC_TMA pipeline stages with a tiny dataset.
+# Run via:  python scripts/smoke_test_pipeline.py
+
+defaults:
+  kfold_method: StratifiedKFold
+  granularity: level3
+  phenotype_column: cell_type
+  batch_column: batch_id
+  strip_labels: true
+  n_splits: 2
+  spatial_smooth: false
+  spatial_k_neighbors: 15
+  unlabeled_methods:
+    - spade
+  pipeline:
+    strip_labels: true
+    pseudo_label: false
+    graph_method: both
+
+datasets:
+
+  CRC_TMA_SMOKE:
+    config: configs/crc_tma_smoke.yaml
+    batch_column: batch_id
+    artifacts:
+      decision_matrix_scyan: configs/artifacts/CRC_TMA/scyan_decision_matrix_level3.csv
+      decision_matrix_tacit: configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv
+      decision_matrix_astir: src/methods/astir/cell_types_CRC_TMA.yml
+    # One fast method per executor category (no R / image / heavy DL).
+    methods:
+      - random_forest
+      - logistic_regression
+      - singler
+      - spade

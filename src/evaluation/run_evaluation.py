@@ -159,20 +159,24 @@ def main() -> None:
         print(l3[cols].head(10).to_string(index=False))
 
     if args.plot:
-        from visualize import generate_report_plots
+        try:
+            from visualize import generate_report_plots
 
-        plots = generate_report_plots(
-            args.dataset,
-            results_root,
-            per_fold_csv=per_fold_path,
-            quant_path=quant_path,
-            marker_cols=marker_cols or None,
-            summary_df=summary,
-        )
-        tables_dir = results_root / args.dataset / "summary" / "tables"
-        print(f"\n  Plots written: {len(plots)} file(s) under {results_root / args.dataset / 'summary' / 'plots'}")
-        if tables_dir.is_dir():
-            print(f"  Tables written: {len(list(tables_dir.glob('*.csv')))} file(s) under {tables_dir}")
+            plots = generate_report_plots(
+                args.dataset,
+                results_root,
+                per_fold_csv=per_fold_path,
+                quant_path=quant_path,
+                marker_cols=marker_cols or None,
+                summary_df=summary,
+            )
+            tables_dir = results_root / args.dataset / "summary" / "tables"
+            print(f"\n  Plots written: {len(plots)} file(s) under {results_root / args.dataset / 'summary' / 'plots'}")
+            if tables_dir.is_dir():
+                print(f"  Tables written: {len(list(tables_dir.glob('*.csv')))} file(s) under {tables_dir}")
+        except ImportError as exc:
+            logger.warning("Plot generation skipped: %s", exc)
+            print(f"\n  Plots skipped (install matplotlib for figures): {exc}")
 
 
 if __name__ == "__main__":

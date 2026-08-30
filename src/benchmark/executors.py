@@ -30,7 +30,7 @@ for _p in [str(_METHODS_UTILS), str(_PSEUDO_DIR), str(_EVAL_DIR), str(_SPATIAL_D
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from ground_truth import DEFAULT_EVAL_DROP_COLUMNS  # noqa: E402
+from ground_truth import DEFAULT_EVAL_DROP_COLUMNS, resolve_markers_in_quant  # noqa: E402
 from performance import write_run_manifest  # noqa: E402
 from postprocess import postprocess_predictions_dir  # noqa: E402
 from integration import attach_spatial_artifacts  # noqa: E402
@@ -178,7 +178,7 @@ def run_unsupervised(ctx: DatasetContext, spec: MethodSpec, iterations: int = 1)
 
     out = ctx.results_dir(spec.id)
     out.mkdir(parents=True, exist_ok=True)
-    markers = ctx.markers
+    markers = resolve_markers_in_quant(ctx.quant_path, ctx.markers)
 
     if spec.id == "leiden":
         cmd = [

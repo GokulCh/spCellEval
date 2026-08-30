@@ -127,6 +127,35 @@ def get_marker_columns(config: Dict[str, Any]) -> List[str]:
     return [_clean_marker_name(m) for m in raw_markers]
 
 
+def resolve_markers_in_quant(
+    quant_path: Path,
+    configured_markers: List[str],
+) -> List[str]:
+    """Return marker columns that exist in a processed quantification CSV.
+
+    ETL channel harmonization may shorten names (e.g. ``CD20 - B cells`` → ``CD20``),
+    so we fall back to numeric feature columns when exact names are absent.
+    """
+    sample = pd.read_csv(quant_path, nrows=8)
+    present = [m for m in configured_markers if m in sample.columns]
+    if present:
+        return present
+
+    drop = set(DEFAULT_EVAL_DROP_COLUMNS) | set(LABEL_COLUMNS)
+    numeric = [
+        c for c in sample.columns
+        if c not in drop
+        and not c.startswith("prob_")
+        and pd.api.types.is_numeric_dtype(sample[c])
+    ]
+    if numeric:
+        return numeric
+    raise ValueError(
+        f"No marker columns from config found in {quant_path}. "
+        f"Configured {len(configured_markers)} markers; quant has {len(sample.columns)} columns."
+    )
+
+
 def infer_separate_col(config: Dict[str, Any]) -> str:
     """First metadata column after markers in the TACIT-compatible table.
 

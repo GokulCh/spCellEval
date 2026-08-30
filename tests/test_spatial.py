@@ -24,7 +24,10 @@ def _toy_df():
     })
 
 
-def test_build_knn_graph():
+def test_build_knn_graph_single_cell():
+    edges, dists = build_knn_graph(np.array([1.0]), np.array([2.0]), k=5)
+    assert edges.shape == (2, 0)
+    assert len(dists) == 0
     df = _toy_df()
     edges, dists = build_knn_graph(df["x"].values, df["y"].values, k=5)
     assert edges.shape[0] == 2

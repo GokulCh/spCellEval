@@ -1,0 +1,126 @@
+# Smoke-test config — same schema as crc_tma.yaml, tiny fixture input.
+dataset_name: "CRC_TMA_SMOKE"
+
+etl:
+  harmonize_channels: true
+  strip_acquisition_flags: true
+  extra_strip_columns: []
+
+raw_data:
+  file_path: "tests/fixtures/smoke/CRC_TMA_expression.csv"
+  format: "csv"
+
+column_mappings:
+  cell_id:            "CellID"
+  spatial_x:          "X"
+  spatial_y:          "Y"
+  image_id:           "File Name"
+  patient_id:         "patients"
+  batch_id:           "TMA_AB"
+  ground_truth_label: "ClusterName"
+
+additional_obs:
+  - "Region"
+  - "groups"
+  - "spots"
+  - "neighborhood10"
+  - "neighborhood name"
+
+# Same marker panel as CRC_TMA (subset of columns present in fixture).
+protein_markers:
+  - "CD44 - stroma:Cyc_2_ch_2"
+  - "FOXP3 - regulatory T cells:Cyc_2_ch_3"
+  - "CD8 - cytotoxic T cells:Cyc_3_ch_2"
+  - "p53 - tumor suppressor:Cyc_3_ch_3"
+  - "GATA3 - Th2 helper T cells:Cyc_3_ch_4"
+  - "CD45 - hematopoietic cells:Cyc_4_ch_2"
+  - "T-bet - Th1 cells:Cyc_4_ch_3"
+  - "beta-catenin - Wnt signaling:Cyc_4_ch_4"
+  - "HLA-DR - MHC-II:Cyc_5_ch_2"
+  - "PD-L1 - checkpoint:Cyc_5_ch_3"
+  - "Ki67 - proliferation:Cyc_5_ch_4"
+  - "CD45RA - naive T cells:Cyc_6_ch_2"
+  - "CD4 - T helper cells:Cyc_6_ch_3"
+  - "CD21 - DCs:Cyc_6_ch_4"
+  - "MUC-1 - epithelia:Cyc_7_ch_2"
+  - "CD30 - costimulator:Cyc_7_ch_3"
+  - "CD2 - T cells:Cyc_7_ch_4"
+  - "Vimentin - cytoplasm:Cyc_8_ch_2"
+  - "CD20 - B cells:Cyc_8_ch_3"
+  - "LAG-3 - checkpoint:Cyc_8_ch_4"
+  - "Na-K-ATPase - membranes:Cyc_9_ch_2"
+  - "CD5 - T cells:Cyc_9_ch_3"
+  - "IDO-1 - metabolism:Cyc_9_ch_4"
+  - "Cytokeratin - epithelia:Cyc_10_ch_2"
+  - "CD11b - macrophages:Cyc_10_ch_3"
+  - "CD56 - NK cells:Cyc_10_ch_4"
+  - "aSMA - smooth muscle:Cyc_11_ch_2"
+  - "BCL-2 - apoptosis:Cyc_11_ch_3"
+  - "CD25 - IL-2 Ra:Cyc_11_ch_4"
+  - "CD11c - DCs:Cyc_12_ch_3"
+  - "PD-1 - checkpoint:Cyc_12_ch_4"
+  - "Granzyme B - cytotoxicity:Cyc_13_ch_2"
+  - "EGFR - signaling:Cyc_13_ch_3"
+  - "VISTA - costimulator:Cyc_13_ch_4"
+  - "CD15 - granulocytes:Cyc_14_ch_2"
+  - "ICOS - costimulator:Cyc_14_ch_4"
+  - "Synaptophysin - neuroendocrine:Cyc_15_ch_3"
+  - "GFAP - nerves:Cyc_16_ch_2"
+  - "CD7 - T cells:Cyc_16_ch_3"
+  - "CD3 - T cells:Cyc_16_ch_4"
+  - "Chromogranin A - neuroendocrine:Cyc_17_ch_2"
+  - "CD163 - macrophages:Cyc_17_ch_3"
+  - "CD45RO - memory cells:Cyc_18_ch_3"
+  - "CD68 - macrophages:Cyc_18_ch_4"
+  - "CD31 - vasculature:Cyc_19_ch_3"
+  - "Podoplanin - lymphatics:Cyc_19_ch_4"
+  - "CD34 - vasculature:Cyc_20_ch_3"
+  - "CD38 - multifunctional:Cyc_20_ch_4"
+  - "CD138 - plasma cells:Cyc_21_ch_3"
+  - "HOECHST1:Cyc_1_ch_1"
+  - "CDX2 - intestinal epithelia:Cyc_2_ch_4"
+  - "Collagen IV - bas. memb.:Cyc_12_ch_2"
+  - "CD194 - CCR4 chemokine R:Cyc_14_ch_3"
+  - "MMP9 - matrix metalloproteinase:Cyc_15_ch_2"
+  - "CD71 - transferrin R:Cyc_15_ch_4"
+  - "CD57 - NK cells:Cyc_17_ch_4"
+  - "MMP12 - matrix metalloproteinase:Cyc_21_ch_4"
+  - "DRAQ5:Cyc_23_ch_4"
+
+morphology_features: []
+
+transformations:
+  arcsinh_transform:    true
+  auto_detect_scale:    true
+  cofactor:             5
+  qc_min_expression:    0
+
+label_remap:
+  "B cells":              B_cell
+  "CD11c+ DCs":           Dendritic_cell
+  "CD3+ T cells":         T_cell
+  "CD4+ T cells":         CD4+_T_cell
+  "CD4+ T cells CD45RO+": CD4+_T_cell
+  "CD8+ T cells":         CD8+_T_cell
+  "NK cells":             NK_cell
+  "Tregs":                Treg
+  "granulocytes":         Neutrophil
+  "immune cells":         undefined
+  "lymphatics":           Lymphatic
+  "macrophages":          Macrophage
+  "plasma cells":         Plasma_cell
+  "smooth muscle":        SMA+_Fibroblast
+  "stroma":               Stroma
+  "tumor cells":          Cancer
+  "vasculature":          Endothelial
+
+pseudo_labeling:
+  decision_matrix: "configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv"
+  marker_threshold: 0.5
+  min_score: 1.0
+
+output:
+  processed_dir:    "data/processed/CRC_TMA_SMOKE"
+  output_filename:  "CRC_TMA_SMOKE_quantification.csv"
+  formats: [csv]
+  export_features_only: true
