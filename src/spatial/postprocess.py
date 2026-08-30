@@ -7,12 +7,19 @@ Spatial post-processing hooks for benchmark outputs (Module 3).
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from smoothing import smooth_predictions_file
+
+_UTILS = Path(__file__).resolve().parents[1] / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
+
+from prediction_files import should_apply_spatial_smoothing  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,12 @@ def postprocess_predictions_dir(
     processed = 0
     for pred_path in sorted(result_dir.rglob("predictions_*.csv")):
         if pred_path.name.endswith("_spatial.csv"):
+            continue
+        if not should_apply_spatial_smoothing(pred_path, quant_path):
+            logger.info(
+                "Skipping spatial smoothing for %s (cross-validation or sparse subset).",
+                pred_path.name,
+            )
             continue
         out_path = pred_path if overwrite else pred_path.with_name(
             pred_path.stem + "_spatial.csv"

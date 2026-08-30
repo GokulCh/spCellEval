@@ -204,7 +204,7 @@ def run_pipeline(
         n_files = 0
         if results_root.is_dir():
             for method_dir in results_root.iterdir():
-                if method_dir.is_dir() and method_dir.name != "summary":
+                if method_dir.is_dir() and method_dir.name not in {"summary", "logs"}:
                     n_files += postprocess_predictions_dir(method_dir, quant_path)
 
         graph_path = None
@@ -218,7 +218,7 @@ def run_pipeline(
             )
             if results_root.is_dir():
                 for method_dir in results_root.iterdir():
-                    if method_dir.is_dir() and method_dir.name != "summary":
+                    if method_dir.is_dir() and method_dir.name not in {"summary", "logs"}:
                         attach_spatial_artifacts(
                             quant_path, method_dir, graph_method=graph_method, export_edges=False,
                         )

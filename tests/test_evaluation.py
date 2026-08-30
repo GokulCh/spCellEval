@@ -107,3 +107,54 @@ def test_aggregate_results_adds_stability(tmp_path):
     summary = aggregate_results(per_fold)
     assert "stability" in summary.columns
     assert "notebook_overall_score" in summary.columns
+
+
+def test_discover_prediction_files_excludes_spatial_by_default(tmp_path):
+    from prediction_io import discover_prediction_files  # noqa: E402
+
+    (tmp_path / "predictions_1.csv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "predictions_1_spatial.csv").write_text("a\n", encoding="utf-8")
+
+    raw_only = discover_prediction_files(tmp_path)
+    assert [p.name for p in raw_only] == ["predictions_1.csv"]
+
+    both = discover_prediction_files(tmp_path, include_spatial=True)
+    assert {p.name for p in both} == {"predictions_1.csv", "predictions_1_spatial.csv"}
+
+
+def test_should_apply_spatial_smoothing_skips_cv_subsets(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "utils"))
+    from prediction_files import should_apply_spatial_smoothing  # noqa: E402
+
+    quant = tmp_path / "quant.csv"
+    pd.DataFrame({"Cell_ID": range(10)}).to_csv(quant, index=False)
+
+    full_pred = tmp_path / "predictions_1.csv"
+    pd.DataFrame({"Cell_ID": range(10)}).to_csv(full_pred, index=False)
+
+    fold_pred = tmp_path / "predictions_fold_1.csv"
+    pd.DataFrame({"Cell_ID": range(2)}).to_csv(fold_pred, index=False)
+
+    sparse_pred = tmp_path / "predictions_2.csv"
+    pd.DataFrame({"Cell_ID": range(2)}).to_csv(sparse_pred, index=False)
+
+    assert should_apply_spatial_smoothing(full_pred, quant) is True
+    assert should_apply_spatial_smoothing(fold_pred, quant) is False
+    assert should_apply_spatial_smoothing(sparse_pred, quant) is False
+
+
+def test_evaluation_levels_for_nested_clustering_outputs(tmp_path):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "utils"))
+    from prediction_files import evaluation_levels_for_file  # noqa: E402
+
+    rf_fold = tmp_path / "random_forest" / "level3" / "predictions_fold_1.csv"
+    rf_fold.parent.mkdir(parents=True)
+    rf_fold.touch()
+
+    leiden_l1 = tmp_path / "leiden" / "level3" / "res1" / "level1" / "predictions_1.csv"
+    leiden_l1.parent.mkdir(parents=True)
+    leiden_l1.touch()
+
+    all_levels = ["level1", "level2", "level3"]
+    assert evaluation_levels_for_file(rf_fold, all_levels) == all_levels
+    assert evaluation_levels_for_file(leiden_l1, all_levels) == ["level1"]

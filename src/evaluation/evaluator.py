@@ -7,6 +7,7 @@ Core evaluation loop: scan results/, compute metrics, aggregate across folds.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -21,6 +22,12 @@ from prediction_io import (
 )
 from quant_merge import enrich_from_quant, infer_marker_columns
 from reporting import notebook_overall_score, stability_score
+
+_UTILS = Path(__file__).resolve().parents[1] / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
+
+from prediction_files import evaluation_levels_for_file  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +52,15 @@ def evaluate_predictions_file(
     quant_path: Optional[Path] = None,
     marker_cols: Optional[List[str]] = None,
     marker_rules: Optional[dict] = None,
+    df: Optional[pd.DataFrame] = None,
+    unsupervised: Optional[dict] = None,
 ) -> dict:
     """Evaluate a single predictions CSV (supervised + unsupervised metrics)."""
-    df = normalize_columns(pd.read_csv(path))
-    df = enrich_from_quant(df, quant_path, marker_cols=marker_cols)
+    if df is None:
+        df = normalize_columns(pd.read_csv(path))
+        df = enrich_from_quant(df, quant_path, marker_cols=marker_cols)
+    else:
+        df = normalize_columns(df)
 
     yt, yp = resolve_labels_for_level(df, level)
     if yp is None:
@@ -62,11 +74,12 @@ def evaluate_predictions_file(
         "has_ground_truth": has_gt,
     }
 
-    present_markers = infer_marker_columns(df, marker_cols)
-    u = compute_unsupervised_metrics(
-        df, "predicted_phenotype", present_markers[:40], marker_rules=marker_rules,
-    )
-    row.update(u.to_dict())
+    if unsupervised is None:
+        present_markers = infer_marker_columns(df, marker_cols)
+        unsupervised = compute_unsupervised_metrics(
+            df, "predicted_phenotype", present_markers[:40], marker_rules=marker_rules,
+        ).to_dict()
+    row.update(unsupervised)
 
     if has_gt:
         m = compute_supervised_metrics(
@@ -76,6 +89,22 @@ def evaluate_predictions_file(
         row.update(m.to_dict())
 
     return row
+
+
+def _load_predictions_for_eval(
+    path: Path,
+    *,
+    quant_path: Optional[Path],
+    marker_cols: Optional[List[str]],
+    marker_rules: Optional[dict],
+) -> tuple[pd.DataFrame, dict]:
+    df = normalize_columns(pd.read_csv(path))
+    df = enrich_from_quant(df, quant_path, marker_cols=marker_cols)
+    present_markers = infer_marker_columns(df, marker_cols)
+    unsupervised = compute_unsupervised_metrics(
+        df, "predicted_phenotype", present_markers[:40], marker_rules=marker_rules,
+    ).to_dict()
+    return df, unsupervised
 
 
 def evaluate_dataset(
@@ -98,7 +127,30 @@ def evaluate_dataset(
     rows = []
 
     for method, path_level, fold_id, path in iter_method_predictions(dataset_results, methods):
-        for level in levels:
+        file_levels = evaluation_levels_for_file(path, levels)
+        if not file_levels:
+            continue
+        try:
+            df, unsupervised = _load_predictions_for_eval(
+                path,
+                quant_path=quant_path,
+                marker_cols=marker_cols,
+                marker_rules=marker_rules,
+            )
+        except Exception as exc:
+            logger.warning("Skipping %s: %s", path, exc)
+            continue
+
+        perf_dir = path.parent
+        while perf_dir != dataset_results and not (perf_dir / "fold_times.txt").exists():
+            if perf_dir.parent == perf_dir:
+                break
+            perf_dir = perf_dir.parent
+        perf = find_performance_file(
+            perf_dir if (perf_dir / "fold_times.txt").exists() else path.parent
+        )
+
+        for level in file_levels:
             try:
                 row = evaluate_predictions_file(
                     path,
@@ -107,22 +159,14 @@ def evaluate_dataset(
                     quant_path=quant_path,
                     marker_cols=marker_cols,
                     marker_rules=marker_rules,
+                    df=df,
+                    unsupervised=unsupervised,
                 )
                 row["dataset"] = dataset_name
                 row["method"] = method
                 row["fold"] = fold_id
                 row["path_level"] = path_level
-
-                perf_dir = path.parent
-                while perf_dir != dataset_results and not (perf_dir / "fold_times.txt").exists():
-                    if perf_dir.parent == perf_dir:
-                        break
-                    perf_dir = perf_dir.parent
-                perf = find_performance_file(
-                    perf_dir if (perf_dir / "fold_times.txt").exists() else path.parent
-                )
                 row.update(perf.to_dict())
-
                 rows.append(row)
             except Exception as exc:
                 logger.warning("Skipping %s [%s]: %s", path, level, exc)

@@ -67,6 +67,23 @@ def test_signature_eval_spatial_chain(tmp_path):
     assert (result_dir / "predictions_1_spatial.csv").is_file()
 
 
+def test_postprocess_skips_cross_validation_prediction_files(tmp_path):
+    quant = pd.read_csv(_FIXTURES / "tiny_quant.csv")
+    quant_path = tmp_path / "quant.csv"
+    quant.to_csv(quant_path, index=False)
+
+    result_dir = tmp_path / "random_forest" / "level3"
+    result_dir.mkdir(parents=True)
+    fold_pred = quant.iloc[:2].copy()
+    fold_pred["predicted_phenotype"] = fold_pred["cell_type"]
+    fold_pred["true_phenotype"] = fold_pred["cell_type"]
+    fold_pred.to_csv(result_dir / "predictions_fold_1.csv", index=False)
+
+    n = postprocess_predictions_dir(result_dir, quant_path)
+    assert n == 0
+    assert not (result_dir / "predictions_fold_1_spatial.csv").exists()
+
+
 def test_unlabeled_method_filter():
     from method_registry import filter_unlabeled_methods, is_unlabeled_compatible
 

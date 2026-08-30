@@ -80,11 +80,11 @@ def run_signature(
         "decision_matrix",
         "src/methods/TACIT/IMMUcan_decision_matrix_level3.csv",
     )
-    marker_cols = get_marker_columns(config)
+    # Use decision-matrix markers that exist in quant (short names like CD3, PanCK).
     predictions = apply_signature_rules(
         df,
         decision_matrix=dm_path,
-        marker_cols=marker_cols,
+        marker_cols=None,
         threshold=threshold,
         min_score=min_score,
     )

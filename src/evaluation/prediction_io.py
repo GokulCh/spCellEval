@@ -7,6 +7,7 @@ Discover and normalise prediction CSV files from Stage 3 benchmark outputs.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
@@ -14,18 +15,35 @@ import pandas as pd
 
 from hierarchy import LEVEL_COLUMN, build_level_mappings
 
+_UTILS = Path(__file__).resolve().parents[1] / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
+
+from prediction_files import is_spatial_smoothed_file  # noqa: E402
+
 _PRED_FILE_RE = re.compile(r"predictions(?:_fold)?[_]?(\d+)\.csv$", re.IGNORECASE)
 
 TRUE_COL_CANDIDATES = ["true_phenotype", "cell_type", "true_label", "label_name"]
 PRED_COL_CANDIDATES = ["predicted_phenotype", "predictions", "prediction", "scyan_pop"]
 
 
-def discover_prediction_files(results_dir: Path) -> List[Path]:
-    """Recursively find all ``predictions*.csv`` under *results_dir*."""
+def discover_prediction_files(
+    results_dir: Path,
+    *,
+    include_spatial: bool = False,
+) -> List[Path]:
+    """Recursively find prediction CSVs under *results_dir*.
+
+    By default, spatial-smoothed outputs (``*_spatial.csv``) are excluded so
+    supervised metrics are not averaged with their raw counterparts.
+    """
     if not results_dir.is_dir():
         return []
     files = sorted(results_dir.rglob("predictions*.csv"))
-    return [f for f in files if f.name.startswith("predictions")]
+    out = [f for f in files if f.name.startswith("predictions")]
+    if not include_spatial:
+        out = [f for f in out if not is_spatial_smoothed_file(f)]
+    return out
 
 
 def extract_fold_id(path: Path) -> str:
@@ -89,9 +107,11 @@ def infer_method_and_level(path: Path, dataset_results: Path) -> Tuple[str, str]
 def iter_method_predictions(
     dataset_results: Path,
     methods: Optional[List[str]] = None,
+    *,
+    include_spatial: bool = False,
 ) -> Iterator[Tuple[str, str, str, Path]]:
     """Yield ``(method, level, fold_id, path)`` for each prediction file."""
-    for path in discover_prediction_files(dataset_results):
+    for path in discover_prediction_files(dataset_results, include_spatial=include_spatial):
         method, level = infer_method_and_level(path, dataset_results)
         if methods and method not in methods:
             continue
