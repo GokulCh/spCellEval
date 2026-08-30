@@ -47,17 +47,19 @@ for _p in [
     str(_SRC / "spatial"),
     str(_SRC / "preprocessing"),
     str(_SRC / "pseudo_labeling"),
+    str(_SRC / "utils"),
 ]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from method_registry import resolve_unlabeled_methods  # noqa: E402
+from pipeline_logging import PipelineLogSession, log_command_banner  # noqa: E402
 
 logger = logging.getLogger("run_pipeline")
 
 
-def _run_script(cmd: List[str], cwd: Optional[Path] = None) -> None:
-    logger.info("Running: %s", " ".join(cmd))
+def _run_script(cmd: List[str], cwd: Optional[Path] = None, *, stage: str = "subprocess") -> None:
+    log_command_banner(stage, cmd)
     result = subprocess.run(cmd, cwd=str(cwd or _REPO))
     if result.returncode != 0:
         raise RuntimeError(f"Command failed (exit {result.returncode}): {' '.join(cmd)}")
@@ -88,6 +90,7 @@ def run_pipeline(
     unlabeled: bool = False,
     benchmark_config: Optional[Path] = None,
     root: Path = _REPO,
+    parent_log_active: bool = False,
 ) -> dict:
     """Execute the full benchmark pipeline for one dataset."""
     bench_cfg_path = (benchmark_config or (root / "configs" / "benchmark.yaml")).resolve()
@@ -113,6 +116,9 @@ def run_pipeline(
 
     stages = {}
 
+    def _append_no_log(cmd: List[str]) -> List[str]:
+        return [*cmd, "--no_log_file"]
+
     # Stage 1 — ETL
     if not skip_preprocess:
         preprocess_cmd = [
@@ -123,7 +129,7 @@ def run_pipeline(
         ]
         if unlabeled:
             preprocess_cmd.append("--unlabeled")
-        _run_script(preprocess_cmd)
+        _run_script(preprocess_cmd, stage="preprocess")
         stages["preprocess"] = str(quant_path)
     elif not quant_path.is_file():
         raise FileNotFoundError(f"--skip_preprocess set but quant file missing: {quant_path}")
@@ -141,7 +147,7 @@ def run_pipeline(
                 "--root_dir", str(root),
                 "--strip_labels",
                 "--output", str(features_path),
-            ])
+            ], stage="feature_separation")
             stages["feature_separation"] = str(features_path)
         elif unlabeled:
             stages["feature_separation"] = "skipped (unlabeled — no expert labels to strip)"
@@ -157,7 +163,7 @@ def run_pipeline(
             ]
             if unlabeled and method == "signature":
                 pl_cmd.append("--annotate_quant")
-            _run_script(pl_cmd)
+            _run_script(pl_cmd, stage="pseudo_labeling")
             stages["pseudo_labeling"] = method
             if unlabeled:
                 stages["annotated_quant"] = str(quant_dir / f"{dataset}_annotated.csv")
@@ -182,7 +188,9 @@ def run_pipeline(
             cmd.append("--recreate_kfolds")
         elif ensure_kfolds:
             cmd.append("--ensure_kfolds")
-        _run_script(cmd)
+        if parent_log_active:
+            cmd = _append_no_log(cmd)
+        _run_script(cmd, stage="benchmark")
         stages["benchmark"] = "done"
     else:
         stages["benchmark"] = "skipped"
@@ -233,7 +241,9 @@ def run_pipeline(
             eval_cmd.append("--plot")
         if unlabeled:
             eval_cmd.append("--unlabeled")
-        _run_script(eval_cmd)
+        if parent_log_active:
+            eval_cmd = _append_no_log(eval_cmd)
+        _run_script(eval_cmd, stage="evaluation")
         stages["evaluation"] = str(root / "results" / dataset / "summary" / "final_results.csv")
     else:
         stages["evaluation"] = "skipped"
@@ -276,40 +286,71 @@ def build_parser() -> argparse.ArgumentParser:
         help="Benchmark YAML (default: configs/benchmark.yaml).",
     )
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--log_dir",
+        type=Path,
+        default=None,
+        help="Directory for execution logs (default: results/{dataset}/logs/).",
+    )
+    p.add_argument(
+        "--no_log_file",
+        action="store_true",
+        help="Disable writing execution logs to disk.",
+    )
     return p
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        level=logging.DEBUG if args.verbose else logging.INFO,
-    )
+    root = args.root_dir.resolve()
 
-    stages = run_pipeline(
-        args.dataset,
-        methods=args.methods,
-        skip_preprocess=args.skip_preprocess,
-        skip_stage2=args.skip_stage2,
-        skip_benchmark=args.skip_benchmark,
-        skip_spatial=args.skip_spatial,
-        skip_eval=args.skip_eval,
-        skip_viz=args.skip_viz,
-        recreate_kfolds=args.recreate_kfolds,
-        spatial_smooth=not args.no_spatial_smooth,
-        export_graphs=not args.no_graph_export,
-        pseudo_label=args.pseudo_label,
-        pseudo_method=args.pseudo_method,
-        unlabeled=args.unlabeled,
-        benchmark_config=args.benchmark_config,
-        root=args.root_dir.resolve(),
-    )
+    def _execute() -> dict:
+        stages = run_pipeline(
+            args.dataset,
+            methods=args.methods,
+            skip_preprocess=args.skip_preprocess,
+            skip_stage2=args.skip_stage2,
+            skip_benchmark=args.skip_benchmark,
+            skip_spatial=args.skip_spatial,
+            skip_eval=args.skip_eval,
+            skip_viz=args.skip_viz,
+            recreate_kfolds=args.recreate_kfolds,
+            spatial_smooth=not args.no_spatial_smooth,
+            export_graphs=not args.no_graph_export,
+            pseudo_label=args.pseudo_label,
+            pseudo_method=args.pseudo_method,
+            unlabeled=args.unlabeled,
+            benchmark_config=args.benchmark_config,
+            root=root,
+            parent_log_active=not args.no_log_file,
+        )
 
-    print("\n" + "=" * 60)
-    print(f"Pipeline complete for {args.dataset}")
-    for stage, info in stages.items():
-        print(f"  {stage}: {info}")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print(f"Pipeline complete for {args.dataset}")
+        for stage, info in stages.items():
+            print(f"  {stage}: {info}")
+        print("=" * 60)
+        return stages
+
+    if args.no_log_file:
+        logging.basicConfig(
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            level=logging.DEBUG if args.verbose else logging.INFO,
+        )
+        _execute()
+        return
+
+    with PipelineLogSession(
+        root=root,
+        dataset=args.dataset,
+        run_name="pipeline",
+        verbose=args.verbose,
+        log_dir=args.log_dir.resolve() if args.log_dir else None,
+    ) as log_session:
+        log_session.configure_logging()
+        stages = _execute()
+        log_session.add_manifest(stages=stages)
+        print(f"\nFull execution log: {log_session.main_log}")
 
 
 if __name__ == "__main__":

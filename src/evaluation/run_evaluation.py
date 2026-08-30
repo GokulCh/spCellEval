@@ -39,10 +39,14 @@ _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parents[1]
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+_UTILS = _REPO / "src" / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
 
 from evaluator import aggregate_results, evaluate_dataset  # noqa: E402
 from dataset_paths import resolve_dataset_quant  # noqa: E402
 from marker_rules import load_marker_purity_rules  # noqa: E402
+from pipeline_logging import PipelineLogSession  # noqa: E402
 
 logger = logging.getLogger("run_evaluation")
 
@@ -82,16 +86,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rank methods by unsupervised metrics only (no ground-truth accuracy).",
     )
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--log_dir",
+        type=Path,
+        default=None,
+        help="Directory for execution logs (default: results/{dataset}/logs/).",
+    )
+    p.add_argument(
+        "--no_log_file",
+        action="store_true",
+        help="Disable writing execution logs to disk.",
+    )
     return p
 
 
-def main() -> None:
-    args = build_parser().parse_args()
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        level=logging.DEBUG if args.verbose else logging.INFO,
-    )
-
+def _run_evaluation_cli(args: argparse.Namespace) -> None:
     results_root = args.results_dir.resolve()
     methods = args.methods
 
@@ -177,6 +186,30 @@ def main() -> None:
         except ImportError as exc:
             logger.warning("Plot generation skipped: %s", exc)
             print(f"\n  Plots skipped (install matplotlib for figures): {exc}")
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    root = _REPO
+
+    if args.no_log_file:
+        logging.basicConfig(
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            level=logging.DEBUG if args.verbose else logging.INFO,
+        )
+        _run_evaluation_cli(args)
+        return
+
+    with PipelineLogSession(
+        root=root,
+        dataset=args.dataset,
+        run_name="evaluation",
+        verbose=args.verbose,
+        log_dir=args.log_dir.resolve() if args.log_dir else None,
+    ) as log_session:
+        log_session.configure_logging()
+        _run_evaluation_cli(args)
+        print(f"\nFull execution log: {log_session.main_log}")
 
 
 if __name__ == "__main__":

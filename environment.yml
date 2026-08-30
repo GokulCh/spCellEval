@@ -26,8 +26,9 @@ dependencies:
   # Progress bars
   - tqdm>=4.65
 
-  # Optional: AnnData for future h5ad support
+  # Optional: AnnData / Parquet for processed exports
   - anndata>=0.10
+  - pyarrow>=14.0
 
   # Pip-only packages
   - pip:

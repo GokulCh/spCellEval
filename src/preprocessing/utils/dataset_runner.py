@@ -157,12 +157,21 @@ class DatasetRunner:
             logger.info("Saved CSV %d x %d to %s", *self.df.shape, primary_path)
         if "parquet" in formats:
             parquet_path = primary_path.with_suffix(".parquet")
-            self.df.to_parquet(parquet_path, index=False)
-            logger.info("Saved Parquet to %s", parquet_path)
+            try:
+                self.df.to_parquet(parquet_path, index=False)
+                logger.info("Saved Parquet to %s", parquet_path)
+            except ImportError:
+                logger.warning(
+                    "Skipping Parquet export (pyarrow or fastparquet not installed). "
+                    "Install with: pip install pyarrow"
+                )
         if "h5ad" in formats:
             h5ad_path = primary_path.with_suffix(".h5ad")
-            self._save_h5ad(h5ad_path)
-            logger.info("Saved H5AD to %s", h5ad_path)
+            try:
+                self._save_h5ad(h5ad_path)
+                logger.info("Saved H5AD to %s", h5ad_path)
+            except ImportError as exc:
+                logger.warning("Skipping H5AD export (%s).", exc)
 
         return primary_path
 

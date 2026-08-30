@@ -48,11 +48,15 @@ _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parents[1]
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
+_UTILS = _REPO / "src" / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
 
 from dataset_context import DatasetContext  # noqa: E402
 from executors import MethodExecutionError, execute_method  # noqa: E402
 from method_registry import METHOD_REGISTRY, MethodCategory, list_methods  # noqa: E402
 from method_registry import resolve_unlabeled_methods, filter_unlabeled_methods  # noqa: E402
+from pipeline_logging import PipelineLogSession  # noqa: E402
 
 logger = logging.getLogger("run_benchmark")
 
@@ -259,25 +263,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--list_methods", action="store_true", help="Print method catalog and exit.")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument(
+        "--log_dir",
+        type=Path,
+        default=None,
+        help="Directory for execution logs (default: results/{dataset}/logs/).",
+    )
+    p.add_argument(
+        "--no_log_file",
+        action="store_true",
+        help="Disable writing execution logs to disk.",
+    )
     return p
 
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        level=logging.DEBUG if args.verbose else logging.INFO,
-    )
-
-    if args.list_methods:
-        _print_method_catalog()
-        return
-
-    if not args.dataset:
-        parser.error("--dataset is required (or use --list_methods).")
-
+def _run_benchmark_cli(args: argparse.Namespace) -> None:
     root = args.root_dir.resolve()
     bench_cfg = _load_benchmark_config(
         args.benchmark_config if args.benchmark_config.is_absolute()
@@ -288,7 +288,7 @@ def main() -> None:
     if args.methods:
         methods = args.methods
     elif args.unlabeled:
-        methods = resolve_unlabeled_methods(bench_cfg, ds_entry, None)
+        methods = resolve_unlabeled_methods(ds_entry, bench_cfg, None)
     elif args.all_methods:
         methods = list(METHOD_REGISTRY.keys())
     else:
@@ -328,6 +328,42 @@ def main() -> None:
         for mid, err in summary["failed"]:
             print(f"    FAIL {mid}: {err}")
         sys.exit(1)
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.list_methods:
+        logging.basicConfig(
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            level=logging.DEBUG if args.verbose else logging.INFO,
+        )
+        _print_method_catalog()
+        return
+
+    if not args.dataset:
+        parser.error("--dataset is required (or use --list_methods).")
+
+    root = args.root_dir.resolve()
+    if args.no_log_file:
+        logging.basicConfig(
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            level=logging.DEBUG if args.verbose else logging.INFO,
+        )
+        _run_benchmark_cli(args)
+        return
+
+    with PipelineLogSession(
+        root=root,
+        dataset=args.dataset,
+        run_name="benchmark",
+        verbose=args.verbose,
+        log_dir=args.log_dir.resolve() if args.log_dir else None,
+    ) as log_session:
+        log_session.configure_logging()
+        _run_benchmark_cli(args)
+        print(f"\nFull execution log: {log_session.main_log}")
 
 
 if __name__ == "__main__":

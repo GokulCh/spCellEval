@@ -19,6 +19,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,11 @@ import time
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
+_SRC_UTILS = _REPO / "src" / "utils"
+if str(_SRC_UTILS) not in sys.path:
+    sys.path.insert(0, str(_SRC_UTILS))
+
+from pipeline_logging import PipelineLogSession  # noqa: E402
 _FIXTURE_RAW = _REPO / "tests" / "fixtures" / "smoke" / "CRC_TMA_expression.csv"
 _FULL_RAW = _REPO / "data" / "raw" / "CRC_TMA" / "CRC_TMA_expression.csv"
 _PROCESSED = _REPO / "data" / "processed" / "CRC_TMA_SMOKE"
@@ -83,6 +89,11 @@ def main() -> int:
         help="Deprecated alias for default behavior (outputs are kept).",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--no_log_file",
+        action="store_true",
+        help="Disable writing smoke-test wrapper logs to disk.",
+    )
     args = parser.parse_args()
 
     if args.regenerate_fixture:
@@ -111,26 +122,55 @@ def main() -> int:
     ]
     if args.verbose:
         cmd.append("-v")
+    if args.no_log_file:
+        cmd.append("--no_log_file")
 
-    print("Command:")
-    print(" ", " ".join(cmd))
-    print("=" * 60)
+    def _run_smoke() -> int:
+        print("Command:")
+        print(" ", " ".join(cmd))
+        print("=" * 60)
 
-    start = time.time()
-    result = subprocess.run(cmd, cwd=str(_REPO))
-    elapsed = time.time() - start
+        start = time.time()
+        result = subprocess.run(cmd, cwd=str(_REPO))
+        elapsed = time.time() - start
 
-    summary = _REPO / "results" / "CRC_TMA_SMOKE" / "summary" / "final_results.csv"
-    print("\n" + "=" * 60)
-    if result.returncode == 0:
-        print(f"SMOKE TEST PASSED in {elapsed:.0f}s ({elapsed / 60:.1f} min)")
-        if summary.is_file():
-            print(f"  Summary: {summary}")
-    else:
-        print(f"SMOKE TEST FAILED (exit {result.returncode}) after {elapsed:.0f}s")
-        print("  Fix errors above before running the full CRC_TMA pipeline.")
-    print("=" * 60)
-    return result.returncode
+        summary = _REPO / "results" / "CRC_TMA_SMOKE" / "summary" / "final_results.csv"
+        manifest_path = _REPO / "results" / "CRC_TMA_SMOKE" / "logs" / "latest_manifest.json"
+        pipeline_log = None
+        if manifest_path.is_file():
+            try:
+                pipeline_log = json.loads(manifest_path.read_text(encoding="utf-8")).get("log_file")
+            except (json.JSONDecodeError, OSError):
+                pipeline_log = None
+
+        print("\n" + "=" * 60)
+        if result.returncode == 0:
+            print(f"SMOKE TEST PASSED in {elapsed:.0f}s ({elapsed / 60:.1f} min)")
+            if summary.is_file():
+                print(f"  Summary: {summary}")
+            if pipeline_log:
+                print(f"  Pipeline log: {pipeline_log}")
+        else:
+            print(f"SMOKE TEST FAILED (exit {result.returncode}) after {elapsed:.0f}s")
+            if pipeline_log:
+                print(f"  Pipeline log: {pipeline_log}")
+            print("  Fix errors above before running the full CRC_TMA pipeline.")
+        print("=" * 60)
+        return result.returncode
+
+    if args.no_log_file:
+        return _run_smoke()
+
+    with PipelineLogSession(
+        root=_REPO,
+        dataset="CRC_TMA_SMOKE",
+        run_name="smoke_test",
+        verbose=args.verbose,
+    ) as log_session:
+        log_session.configure_logging()
+        code = _run_smoke()
+        print(f"\nSmoke-test wrapper log: {log_session.main_log}")
+        return code
 
 
 if __name__ == "__main__":
