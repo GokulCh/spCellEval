@@ -20,6 +20,7 @@ from prediction_io import (
     resolve_labels_for_level,
 )
 from quant_merge import enrich_from_quant, infer_marker_columns
+from reporting import notebook_overall_score, stability_score
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +44,17 @@ def evaluate_predictions_file(
     *,
     quant_path: Optional[Path] = None,
     marker_cols: Optional[List[str]] = None,
+    marker_rules: Optional[dict] = None,
 ) -> dict:
     """Evaluate a single predictions CSV (supervised + unsupervised metrics)."""
     df = normalize_columns(pd.read_csv(path))
     df = enrich_from_quant(df, quant_path, marker_cols=marker_cols)
 
     yt, yp = resolve_labels_for_level(df, level)
-    if yt is None or yp is None:
-        raise ValueError(f"Could not resolve labels in {path}")
+    if yp is None:
+        raise ValueError(f"Could not resolve predicted labels in {path}")
 
-    has_gt = yt.notna().any()
+    has_gt = yt is not None and yt.notna().any()
     row = {
         "file": str(path),
         "level": level,
@@ -61,7 +63,9 @@ def evaluate_predictions_file(
     }
 
     present_markers = infer_marker_columns(df, marker_cols)
-    u = compute_unsupervised_metrics(df, "predicted_phenotype", present_markers[:40])
+    u = compute_unsupervised_metrics(
+        df, "predicted_phenotype", present_markers[:40], marker_rules=marker_rules,
+    )
     row.update(u.to_dict())
 
     if has_gt:
@@ -83,6 +87,7 @@ def evaluate_dataset(
     hierarchy_path: Optional[Path] = None,
     quant_path: Optional[Path] = None,
     marker_cols: Optional[List[str]] = None,
+    marker_rules: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Evaluate all prediction files for one dataset; return per-fold results."""
     dataset_results = results_root / dataset_name
@@ -101,6 +106,7 @@ def evaluate_dataset(
                     hierarchy_path=hierarchy_path,
                     quant_path=quant_path,
                     marker_cols=marker_cols,
+                    marker_rules=marker_rules,
                 )
                 row["dataset"] = dataset_name
                 row["method"] = method
@@ -148,9 +154,14 @@ def aggregate_results(per_fold: pd.DataFrame) -> pd.DataFrame:
             row[f"{col}_mean"] = grp[col].mean()
             row[f"{col}_std"] = grp[col].std()
         row["n_folds"] = len(grp)
+        if "weighted_f1" in grp.columns:
+            row["stability"] = stability_score(grp["weighted_f1"].std())
         summary_rows.append(row)
 
     summary = pd.DataFrame(summary_rows)
+
+    if "stability" in summary.columns:
+        summary["notebook_overall_score"] = summary.apply(notebook_overall_score, axis=1)
 
     if "accuracy_mean" in summary.columns and "macro_f1_mean" in summary.columns:
         summary["supervised_score"] = (
@@ -173,5 +184,7 @@ def aggregate_results(per_fold: pd.DataFrame) -> pd.DataFrame:
                 + summary.loc[has_sup, "unsupervised_score"].fillna(0) * 0.4
             )
             summary.loc[~has_sup, "overall_score"] = summary.loc[~has_sup, "unsupervised_score"]
+        else:
+            summary["overall_score"] = summary["unsupervised_score"]
 
     return summary.sort_values(["dataset", "method", "level"]).reset_index(drop=True)

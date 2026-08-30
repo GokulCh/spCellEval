@@ -8,8 +8,15 @@ defaults:
   batch_column: batch_id
   strip_labels: true
   n_splits: 5
-  spatial_smooth: true
+  spatial_smooth: false
   spatial_k_neighbors: 15
+  # Tabular methods that run without expert labels (prior-knowledge + clustering)
+  unlabeled_methods:
+    - signature
+    - scyan
+    - leiden
+    - louvain
+    - spade
   pipeline:
     strip_labels: true
     pseudo_label: false
@@ -22,15 +29,19 @@ datasets:
     config: configs/immucan.yaml
     image_data_dir: data/raw/IMMUcan
     artifacts:
-      decision_matrix_scyan: src/methods/scyan/IMMUcan_decision_matrix_level3.csv
-      decision_matrix_tacit: src/methods/TACIT/IMMUcan_decision_matrix_level3.csv
+      decision_matrix_scyan: configs/artifacts/IMMUcan/scyan_decision_matrix_level3.csv
+      decision_matrix_tacit: configs/artifacts/IMMUcan/tacit_decision_matrix_level3.csv
       decision_matrix_astir: src/methods/astir/cell_types_IMMUcan.yml
       celllens_script: src/methods/CellLens/IMMUcan_LITE_CellLENS.py
     methods:
       - random_forest
       - xgboost
       - logistic_regression
+      - singler
+      - scarches
       - leiden
+      - louvain
+      - spade
       - flowsom
       - phenograph
       - signature
@@ -46,14 +57,18 @@ datasets:
     batch_column: batch_id
     image_data_dir: data/raw/CRC_TMA
     artifacts:
-      decision_matrix_scyan: src/methods/scyan/CRC_TMA_decision_matrix_level3.csv
-      decision_matrix_tacit: src/methods/TACIT/CRC_TMA_decision_matrix_level3.csv
+      decision_matrix_scyan: configs/artifacts/CRC_TMA/scyan_decision_matrix_level3.csv
+      decision_matrix_tacit: configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv
       decision_matrix_astir: src/methods/astir/cell_types_CRC_TMA.yml
     methods:
       - random_forest
       - xgboost
       - logistic_regression
+      - singler
+      - scarches
       - leiden
+      - louvain
+      - spade
       - flowsom
       - phenograph
       - signature

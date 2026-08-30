@@ -52,6 +52,7 @@ if str(_HERE) not in sys.path:
 from dataset_context import DatasetContext  # noqa: E402
 from executors import MethodExecutionError, execute_method  # noqa: E402
 from method_registry import METHOD_REGISTRY, MethodCategory, list_methods  # noqa: E402
+from method_registry import resolve_unlabeled_methods, filter_unlabeled_methods  # noqa: E402
 
 logger = logging.getLogger("run_benchmark")
 
@@ -91,6 +92,7 @@ def run_benchmark(
     fail_fast: bool = False,
     spatial_smooth: Optional[bool] = None,
     spatial_k_neighbors: int = 15,
+    unlabeled: bool = False,
 ) -> dict:
     bench_cfg = _load_benchmark_config(bench_config_path)
     ds_entry = _resolve_dataset_entry(bench_cfg, dataset_name)
@@ -113,16 +115,19 @@ def run_benchmark(
     if "artifacts" in ds_entry:
         ctx.config.setdefault("benchmark", {})["artifacts"] = ds_entry["artifacts"]
 
-    if recreate_kfolds:
-        kdir = ctx.kfold_dir()
-        if kdir.is_dir():
-            shutil.rmtree(kdir)
-        labels = ctx.labels_path()
-        if labels.is_file():
-            labels.unlink()
-
-    if ensure_kfolds or recreate_kfolds:
-        ctx.ensure_kfolds(strip_labels=defaults.get("strip_labels", True))
+    if unlabeled:
+        methods = filter_unlabeled_methods(methods)
+        logger.info("Unlabeled mode — methods: %s", ", ".join(methods))
+    else:
+        if recreate_kfolds:
+            kdir = ctx.kfold_dir()
+            if kdir.is_dir():
+                shutil.rmtree(kdir)
+            labels = ctx.labels_path()
+            if labels.is_file():
+                labels.unlink()
+        if ensure_kfolds or recreate_kfolds:
+            ctx.ensure_kfolds(strip_labels=defaults.get("strip_labels", True))
 
     results = {"succeeded": [], "skipped": [], "failed": []}
 
@@ -247,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable sliding-window spatial post-processing after each method.",
     )
+    p.add_argument(
+        "--unlabeled",
+        action="store_true",
+        help="Run without expert labels: skip k-folds, use prior-knowledge + clustering methods only.",
+    )
     p.add_argument("--list_methods", action="store_true", help="Print method catalog and exit.")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -277,10 +287,15 @@ def main() -> None:
 
     if args.methods:
         methods = args.methods
+    elif args.unlabeled:
+        methods = resolve_unlabeled_methods(bench_cfg, ds_entry, None)
     elif args.all_methods:
         methods = list(METHOD_REGISTRY.keys())
     else:
         methods = _default_methods(bench_cfg, ds_entry, tabular_only=True)
+
+    if args.unlabeled:
+        methods = filter_unlabeled_methods(methods)
 
     logger.info("Dataset : %s", args.dataset)
     logger.info("Methods : %s", ", ".join(methods))
@@ -296,6 +311,7 @@ def main() -> None:
         skip_missing_deps=not args.strict,
         fail_fast=args.fail_fast,
         spatial_smooth=False if args.no_spatial_smooth else None,
+        unlabeled=args.unlabeled,
     )
 
     print("\n" + "=" * 60)

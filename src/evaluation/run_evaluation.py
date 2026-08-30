@@ -42,6 +42,7 @@ if str(_HERE) not in sys.path:
 
 from evaluator import aggregate_results, evaluate_dataset  # noqa: E402
 from dataset_paths import resolve_dataset_quant  # noqa: E402
+from marker_rules import load_marker_purity_rules  # noqa: E402
 
 logger = logging.getLogger("run_evaluation")
 
@@ -75,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--output_dir", type=Path, default=None)
     p.add_argument("--plot", action="store_true", help="Generate summary plots after evaluation.")
+    p.add_argument(
+        "--unlabeled",
+        action="store_true",
+        help="Rank methods by unsupervised metrics only (no ground-truth accuracy).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -98,6 +104,7 @@ def main() -> None:
 
     logger.info("Evaluating dataset: %s", args.dataset)
     quant_path, marker_cols = resolve_dataset_quant(args.dataset, _REPO)
+    purity_rules = load_marker_purity_rules(args.dataset)
     if quant_path:
         logger.info("Merging marker/spatial data from %s", quant_path)
     per_fold = evaluate_dataset(
@@ -108,6 +115,7 @@ def main() -> None:
         hierarchy_path=args.hierarchy,
         quant_path=quant_path,
         marker_cols=marker_cols or None,
+        marker_rules=purity_rules,
     )
 
     if per_fold.empty:
@@ -133,20 +141,38 @@ def main() -> None:
     print("=" * 60)
 
     if not summary.empty:
-        print("\nTop methods (level3, by overall_score):")
-        l3 = summary[summary["level"] == "level3"].sort_values(
-            "overall_score", ascending=False, na_position="last"
-        )
-        cols = ["method", "accuracy_mean", "macro_f1_mean", "silhouette_mean",
-                "marker_purity_mean", "neighborhood_consistency_mean", "overall_score"]
+        if args.unlabeled:
+            print("\nTop methods (level3, by unsupervised_score):")
+            l3 = summary[summary["level"] == "level3"].sort_values(
+                "unsupervised_score", ascending=False, na_position="last"
+            )
+            cols = ["method", "silhouette_mean", "marker_purity_mean",
+                    "neighborhood_consistency_mean", "unsupervised_score"]
+        else:
+            print("\nTop methods (level3, by overall_score):")
+            l3 = summary[summary["level"] == "level3"].sort_values(
+                "overall_score", ascending=False, na_position="last"
+            )
+            cols = ["method", "accuracy_mean", "macro_f1_mean", "silhouette_mean",
+                    "marker_purity_mean", "neighborhood_consistency_mean", "overall_score"]
         cols = [c for c in cols if c in l3.columns]
         print(l3[cols].head(10).to_string(index=False))
 
     if args.plot:
         from visualize import generate_report_plots
 
-        plots = generate_report_plots(args.dataset, results_root)
+        plots = generate_report_plots(
+            args.dataset,
+            results_root,
+            per_fold_csv=per_fold_path,
+            quant_path=quant_path,
+            marker_cols=marker_cols or None,
+            summary_df=summary,
+        )
+        tables_dir = results_root / args.dataset / "summary" / "tables"
         print(f"\n  Plots written: {len(plots)} file(s) under {results_root / args.dataset / 'summary' / 'plots'}")
+        if tables_dir.is_dir():
+            print(f"  Tables written: {len(list(tables_dir.glob('*.csv')))} file(s) under {tables_dir}")
 
 
 if __name__ == "__main__":

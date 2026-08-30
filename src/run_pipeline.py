@@ -21,6 +21,10 @@ Full pipeline for IMMUcan::
 Skip preprocessing when quant CSV already exists::
 
     python src/run_pipeline.py --dataset IMMUcan --skip_preprocess
+
+Unlabeled clinical sample (no expert ClusterName / cell_type)::
+
+    python src/run_pipeline.py --dataset CRC_TMA --unlabeled
 """
 
 from __future__ import annotations
@@ -46,6 +50,8 @@ for _p in [
 ]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from method_registry import resolve_unlabeled_methods  # noqa: E402
 
 logger = logging.getLogger("run_pipeline")
 
@@ -79,6 +85,7 @@ def run_pipeline(
     export_graphs: bool = True,
     pseudo_label: bool = False,
     pseudo_method: str = "signature",
+    unlabeled: bool = False,
     root: Path = _REPO,
 ) -> dict:
     """Execute the full benchmark pipeline for one dataset."""
@@ -86,10 +93,17 @@ def run_pipeline(
     with bench_cfg_path.open("r", encoding="utf-8") as fh:
         bench_cfg = yaml.safe_load(fh) or {}
 
+    ds_entry = bench_cfg.get("datasets", {}).get(dataset, {})
     pipeline_defaults = bench_cfg.get("defaults", {}).get("pipeline", {})
     ds_config = _dataset_config_path(dataset, bench_cfg)
     with ds_config.open("r", encoding="utf-8") as fh:
         ds_cfg = yaml.safe_load(fh) or {}
+
+    if unlabeled:
+        methods = methods or resolve_unlabeled_methods(ds_entry, bench_cfg, None)
+        pseudo_label = True
+        ensure_kfolds = False
+        recreate_kfolds = False
 
     quant_dir = root / ds_cfg.get("output", {}).get("processed_dir", f"data/processed/{dataset}")
     quant_file = ds_cfg.get("output", {}).get("output_filename", f"{dataset}_quantification.csv")
@@ -100,12 +114,15 @@ def run_pipeline(
 
     # Stage 1 — ETL
     if not skip_preprocess:
-        _run_script([
+        preprocess_cmd = [
             sys.executable,
             str(_SRC / "preprocessing" / "run_preprocess.py"),
             "--config", str(ds_config),
             "--root_dir", str(root),
-        ])
+        ]
+        if unlabeled:
+            preprocess_cmd.append("--unlabeled")
+        _run_script(preprocess_cmd)
         stages["preprocess"] = str(quant_path)
     elif not quant_path.is_file():
         raise FileNotFoundError(f"--skip_preprocess set but quant file missing: {quant_path}")
@@ -114,7 +131,7 @@ def run_pipeline(
 
     # Stage 2 — Feature separation / optional pseudo-labeling
     if not skip_stage2:
-        do_strip = pipeline_defaults.get("strip_labels", True)
+        do_strip = pipeline_defaults.get("strip_labels", True) and not unlabeled
         if do_strip:
             _run_script([
                 sys.executable,
@@ -125,17 +142,24 @@ def run_pipeline(
                 "--output", str(features_path),
             ])
             stages["feature_separation"] = str(features_path)
+        elif unlabeled:
+            stages["feature_separation"] = "skipped (unlabeled — no expert labels to strip)"
 
-        if pseudo_label or pipeline_defaults.get("pseudo_label", False):
+        if pseudo_label or pipeline_defaults.get("pseudo_label", False) or unlabeled:
             method = pseudo_method or pipeline_defaults.get("pseudo_label_method", "signature")
-            _run_script([
+            pl_cmd = [
                 sys.executable,
                 str(_SRC / "pseudo_labeling" / "run_pseudo_labeler.py"),
                 "--config", str(ds_config),
                 "--root_dir", str(root),
                 "--method", method,
-            ])
+            ]
+            if unlabeled and method == "signature":
+                pl_cmd.append("--annotate_quant")
+            _run_script(pl_cmd)
             stages["pseudo_labeling"] = method
+            if unlabeled:
+                stages["annotated_quant"] = str(quant_dir / f"{dataset}_annotated.csv")
     else:
         stages["feature_separation"] = "skipped"
 
@@ -150,7 +174,9 @@ def run_pipeline(
         ]
         if methods:
             cmd.extend(["--methods", *methods])
-        if recreate_kfolds:
+        if unlabeled:
+            cmd.append("--unlabeled")
+        elif recreate_kfolds:
             cmd.append("--recreate_kfolds")
         elif ensure_kfolds:
             cmd.append("--ensure_kfolds")
@@ -193,27 +219,29 @@ def run_pipeline(
     else:
         stages["spatial"] = "skipped"
 
-    # Stage 5 — Evaluation
+    # Stage 5 — Evaluation (+ plots unless --skip_viz)
     if not skip_eval:
-        _run_script([
+        eval_cmd = [
             sys.executable,
             str(_SRC / "evaluation" / "run_evaluation.py"),
             "--dataset", dataset,
             "--results_dir", str(root / "results"),
-            "--plot",
-        ])
+        ]
+        if not skip_viz:
+            eval_cmd.append("--plot")
+        if unlabeled:
+            eval_cmd.append("--unlabeled")
+        _run_script(eval_cmd)
         stages["evaluation"] = str(root / "results" / dataset / "summary" / "final_results.csv")
     else:
         stages["evaluation"] = "skipped"
 
-    # Stage 6 — Visualizations (also triggered by --plot in evaluation)
-    if not skip_viz:
-        from visualize import generate_report_plots
-
-        plots = generate_report_plots(dataset, root / "results")
-        stages["visualization"] = [str(p) for p in plots]
-    else:
+    if skip_viz:
         stages["visualization"] = "skipped"
+    elif skip_eval:
+        stages["visualization"] = "skipped (evaluation skipped)"
+    else:
+        stages["visualization"] = "included via evaluation --plot"
 
     return stages
 
@@ -233,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no_graph_export", action="store_true")
     p.add_argument("--pseudo_label", action="store_true", help="Run Stage 2 pseudo-labeling.")
     p.add_argument("--pseudo_method", default="signature", choices=["signature", "tacit"])
+    p.add_argument(
+        "--unlabeled",
+        action="store_true",
+        help="Clinical/unannotated mode: skip GT ingest & k-folds; run signature/scyan/leiden.",
+    )
     p.add_argument("--recreate_kfolds", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -259,6 +292,7 @@ def main() -> None:
         export_graphs=not args.no_graph_export,
         pseudo_label=args.pseudo_label,
         pseudo_method=args.pseudo_method,
+        unlabeled=args.unlabeled,
         root=args.root_dir.resolve(),
     )
 

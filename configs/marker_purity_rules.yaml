@@ -1,0 +1,63 @@
+# Biological marker purity rules for Module 4 evaluation (per dataset).
+# cell_type -> positive markers (must be high) and negative markers (must be low)
+
+IMMUcan:
+  CD8+_T_cell:
+    positive: [CD3, CD8a, CD8]
+    negative: [CD20, Ecad, CD163]
+  CD4+_T_cell:
+    positive: [CD3, CD4]
+    negative: [CD20, Ecad]
+  B_cell:
+    positive: [CD20]
+    negative: [CD3, Ecad]
+  Cancer:
+    positive: [Ecad, PanCK]
+    negative: [CD3, CD45]
+  M2_Macrophage:
+    positive: [CD163, CD68]
+    negative: [CD3, CD20]
+  Plasma_cell:
+    positive: [CD38, CD138]
+    negative: [CD3]
+  NK_cell:
+    positive: [CD16, CD56]
+    negative: [CD3, CD20]
+
+CRC_TMA:
+  CD8+_T_cell:
+    positive: [CD3, CD8]
+    negative: [CD20, PanCK]
+  CD4+_T_cell:
+    positive: [CD3, CD4]
+    negative: [CD20, PanCK]
+  Treg:
+    positive: [CD3, FOXP3]
+    negative: [CD20, PanCK]
+  B_cell:
+    positive: [CD20]
+    negative: [CD3, PanCK]
+  Cancer:
+    positive: [PanCK]
+    negative: [CD3, CD20]
+  Macrophage:
+    positive: [CD163]
+    negative: [CD3, CD20]
+  M2_Macrophage:
+    positive: [CD163]
+    negative: [CD3, CD20]
+  Dendritic_cell:
+    positive: [CD11c, HLADR]
+    negative: [CD20]
+  Plasma_cell:
+    positive: [CD138]
+    negative: [CD3]
+  NK_cell:
+    positive: [CD56]
+    negative: [CD3, CD20]
+  Endothelial:
+    positive: [CD31]
+    negative: [CD3, PanCK]
+  Lymphatic:
+    positive: [Podoplanin]
+    negative: [CD3]

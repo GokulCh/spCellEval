@@ -131,10 +131,9 @@ label_remap:
   "vasculature":          Endothelial
 
 # ── 8. Pseudo-labeling (Stage 2) ──────────────────────────────────────────
-# CRC_TMA has no bundled TACIT matrix yet; signature rules can use a custom
-# decision matrix once created.  Ground-truth stripping works out of the box.
+# CRC_TMA pseudo-labeling uses the bundled decision matrix in configs/artifacts/.
 pseudo_labeling:
-  decision_matrix: "src/methods/TACIT/CRC_TMA_decision_matrix_level3.csv"
+  decision_matrix: "configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv"
   marker_threshold: 0.5
   min_score: 1.0
 

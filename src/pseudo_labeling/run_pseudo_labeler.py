@@ -48,7 +48,7 @@ from ground_truth import (  # noqa: E402
     load_dataset_config,
     strip_ground_truth,
 )
-from signature_rules import apply_signature_rules  # noqa: E402
+from signature_rules import apply_signature_rules, add_hierarchy_from_predictions  # noqa: E402
 
 logger = logging.getLogger("run_pseudo_labeler")
 
@@ -94,7 +94,43 @@ def run_signature(
     # Preserve ground truth as true_phenotype when available (evaluation contract).
     if "cell_type" in out.columns:
         out["true_phenotype"] = out["cell_type"]
+    else:
+        out = add_hierarchy_from_predictions(out, prediction_col="predicted_phenotype")
     return out
+
+
+def write_annotated_quant(
+    config: dict,
+    root: Path,
+    method: str,
+    threshold: float,
+    min_score: float,
+) -> Path:
+    """Pseudo-label an unlabeled quant CSV and save ``*_annotated.csv``."""
+    input_path = _resolve_processed_path(config, root)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Quantification CSV not found: {input_path}")
+
+    df = pd.read_csv(input_path)
+    if method == "signature":
+        annotated = run_signature(df, config, root, threshold, min_score)
+    elif method == "tacit":
+        raise ValueError(
+            "write_annotated_quant supports signature only; run TACIT via --method tacit "
+            "to write benchmark predictions."
+        )
+    else:
+        raise ValueError(f"Unknown annotation method: {method}")
+
+    annotated["cell_type"] = annotated["predicted_phenotype"]
+    dataset = config.get("dataset_name", "dataset")
+    out_cfg = config.get("output", {})
+    out_dir = root / out_cfg.get("processed_dir", f"data/processed/{dataset}")
+    out_path = out_dir / f"{dataset}_annotated.csv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    annotated.to_csv(out_path, index=False)
+    logger.info("Annotated quant (pseudo-labels) → %s", out_path)
+    return out_path
 
 
 def run_pseudo_labeling(
@@ -236,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum rule satisfaction fraction (default: from config).",
     )
     parser.add_argument(
+        "--annotate_quant",
+        action="store_true",
+        help="Write pseudo-labels + hierarchy to data/processed/{dataset}_annotated.csv.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -271,6 +312,9 @@ def main() -> None:
     pl = config.get("pseudo_labeling", {})
     threshold = args.threshold if args.threshold is not None else pl.get("marker_threshold", 0.0)
     min_score = args.min_score if args.min_score is not None else pl.get("min_score", 1.0)
+
+    if args.annotate_quant:
+        write_annotated_quant(config, root, args.method, threshold, min_score)
 
     run_pseudo_labeling(
         config_path=config_path,

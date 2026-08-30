@@ -104,7 +104,7 @@ label_remap:
 
 # ── 8. Pseudo-labeling (Stage 2) ──────────────────────────────────────────
 pseudo_labeling:
-  decision_matrix: "src/methods/TACIT/IMMUcan_decision_matrix_level3.csv"
+  decision_matrix: "configs/artifacts/IMMUcan/tacit_decision_matrix_level3.csv"
   marker_threshold: 0.5        # post-arcsinh gating cutoff for signature rules
   min_score: 1.0               # 1.0 = all marker rules must pass
   tacit:

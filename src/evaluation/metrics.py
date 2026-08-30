@@ -159,16 +159,9 @@ class UnsupervisedMetrics:
         return asdict(self)
 
 
-# Biological marker purity rules: cell_type -> {positive: [markers], negative: [markers]}
-DEFAULT_MARKER_RULES: Dict[str, Dict[str, list]] = {
-    "CD8+_T_cell": {"positive": ["CD3", "CD8a", "CD8"], "negative": ["CD20", "Ecad", "CD163"]},
-    "CD4+_T_cell": {"positive": ["CD3", "CD4"], "negative": ["CD20", "Ecad"]},
-    "B_cell": {"positive": ["CD20"], "negative": ["CD3", "Ecad"]},
-    "Cancer": {"positive": ["Ecad", "PanCK"], "negative": ["CD3", "CD45"]},
-    "M2_Macrophage": {"positive": ["CD163", "CD68"], "negative": ["CD3", "CD20"]},
-    "Plasma_cell": {"positive": ["CD38", "CD138"], "negative": ["CD3"]},
-    "NK_cell": {"positive": ["CD16", "CD56"], "negative": ["CD3", "CD20"]},
-}
+# Biological marker purity rules (fallback when no dataset rules are passed).
+# Prefer load_marker_purity_rules() from marker_rules.py for dataset-specific rules.
+from marker_rules import IMMUCAN_FALLBACK as DEFAULT_MARKER_RULES  # noqa: E402
 
 
 def spatial_entropy(x: np.ndarray, y: np.ndarray, grid_size: int = 50) -> float:
@@ -284,6 +277,7 @@ def compute_unsupervised_metrics(
     marker_cols: list[str],
     *,
     max_cells: int = 20000,
+    marker_rules: Optional[Dict[str, Dict[str, list]]] = None,
 ) -> UnsupervisedMetrics:
     """Metrics for cluster-quality analysis (subsamples large datasets for speed)."""
     n = len(df)
@@ -313,7 +307,7 @@ def compute_unsupervised_metrics(
     nc = None
     if present_markers:
         mc = marker_consistency_score(work[present_markers], work[cluster_col])
-        mp = marker_purity_score(work, cluster_col)
+        mp = marker_purity_score(work, cluster_col, marker_rules=marker_rules)
     if "x" in work.columns and "y" in work.columns:
         nc = neighborhood_consistency_score(work, cluster_col)
 

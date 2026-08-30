@@ -278,7 +278,13 @@ class DatasetRunner:
         """Apply label_remap from the config to the ground-truth label column.
 
         Also copies the original label into ``cell_labels`` for traceability.
+        Skipped when ``etl.unlabeled`` is true (clinical / no-expert-label mode).
         """
+        etl = self.cfg.get("etl", {})
+        if etl.get("unlabeled", False) or self.cfg.get("unlabeled", False):
+            logger.info("Unlabeled ETL — skipping ground-truth label ingest.")
+            return
+
         mappings = self.cfg.get("column_mappings", {})
         raw_label_col = mappings.get("ground_truth_label")
 

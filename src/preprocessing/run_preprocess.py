@@ -78,9 +78,10 @@ _REQUIRED_OUT  = ["processed_dir", "output_filename"]
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_config(cfg: dict, config_path: Path) -> None:
+def validate_config(cfg: dict, config_path: Path, *, unlabeled: bool = False) -> None:
     """Raise ``ValueError`` if the config is missing mandatory fields."""
     errors: list[str] = []
+    is_unlabeled = unlabeled or cfg.get("etl", {}).get("unlabeled", False)
 
     for key in _REQUIRED_KEYS:
         if key not in cfg:
@@ -97,9 +98,11 @@ def validate_config(cfg: dict, config_path: Path) -> None:
             errors.append(f"  Missing output.{key}")
 
     col = cfg.get("column_mappings", {})
-    for key in ["cell_id", "spatial_x", "spatial_y", "image_id", "ground_truth_label"]:
+    for key in ["cell_id", "spatial_x", "spatial_y", "image_id"]:
         if key not in col:
             errors.append(f"  Missing column_mappings.{key}")
+    if not is_unlabeled and "ground_truth_label" not in col:
+        errors.append("  Missing column_mappings.ground_truth_label (omit with --unlabeled)")
 
     if errors:
         msg = f"Config validation failed for {config_path}:\n" + "\n".join(errors)
@@ -118,6 +121,7 @@ def run_one(
     dry_run: bool = False,
     override_dataset: str | None = None,
     override_output: Path | None = None,
+    unlabeled: bool = False,
 ) -> None:
     """Preprocess a single dataset described by *config_path*."""
     start_time = time.time()
@@ -125,7 +129,10 @@ def run_one(
     with config_path.open("r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 
-    validate_config(cfg, config_path)
+    if unlabeled:
+        cfg.setdefault("etl", {})["unlabeled"] = True
+
+    validate_config(cfg, config_path, unlabeled=unlabeled)
 
     dataset = override_dataset or cfg.get("dataset_name", config_path.stem)
     # Update config with overrides
@@ -254,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate configs and print the plan without loading or writing data.",
     )
     parser.add_argument(
+        "--unlabeled",
+        action="store_true",
+        help="Skip ground-truth label ingest (clinical samples without ClusterName).",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG-level logging.",
@@ -282,6 +294,7 @@ def main() -> None:
             dry_run=args.dry_run,
             override_dataset=args.dataset,
             override_output=args.override_output,
+            unlabeled=args.unlabeled,
         )
     else:
         cfg_dir = args.config_dir if args.config_dir.is_absolute() else root / args.config_dir

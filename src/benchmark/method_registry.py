@@ -57,14 +57,14 @@ def _p(*parts: str) -> Path:
 
 # Per-dataset artifact tables (relative to repo root)
 _IMMUCAN = {
-    "decision_matrix_scyan": "src/methods/scyan/IMMUcan_decision_matrix_level3.csv",
-    "decision_matrix_tacit": "src/methods/TACIT/IMMUcan_decision_matrix_level3.csv",
+    "decision_matrix_scyan": "configs/artifacts/IMMUcan/scyan_decision_matrix_level3.csv",
+    "decision_matrix_tacit": "configs/artifacts/IMMUcan/tacit_decision_matrix_level3.csv",
     "decision_matrix_astir": "src/methods/astir/cell_types_IMMUcan.yml",
     "celllens_script": "src/methods/CellLens/IMMUcan_LITE_CellLENS.py",
 }
 _CRC_TMA = {
-    "decision_matrix_scyan": "src/methods/scyan/CRC_TMA_decision_matrix_level3.csv",
-    "decision_matrix_tacit": "src/methods/TACIT/CRC_TMA_decision_matrix_level3.csv",
+    "decision_matrix_scyan": "configs/artifacts/CRC_TMA/scyan_decision_matrix_level3.csv",
+    "decision_matrix_tacit": "configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv",
     "decision_matrix_astir": "src/methods/astir/cell_types_CRC_TMA.yml",
 }
 
@@ -115,6 +115,22 @@ _register(MethodSpec(
     requires_gpu=True,
     tabular_default=False,
 ))
+_register(MethodSpec(
+    id="singler",
+    display_name="SingleR",
+    category=MethodCategory.SUPERVISED_KFOLD,
+    description="Reference mapping via Pearson correlation to mean cell-type profiles.",
+    script=_p("singler", "run_singler.py"),
+    tabular_default=True,
+))
+_register(MethodSpec(
+    id="scarches",
+    display_name="scArches",
+    category=MethodCategory.SUPERVISED_KFOLD,
+    description="Reference label transfer via scanpy ingest (scArches-compatible).",
+    script=_p("scarches", "run_scarches.py"),
+    tabular_default=True,
+))
 
 # ── Unsupervised (full quant CSV) ─────────────────────────────────────────
 _register(MethodSpec(
@@ -123,6 +139,22 @@ _register(MethodSpec(
     category=MethodCategory.UNSUPERVISED_QUANT,
     description="Leiden clustering + greedy F1 label mapping.",
     script=_p("leiden", "run_leiden_clustering.py"),
+    tabular_default=True,
+))
+_register(MethodSpec(
+    id="louvain",
+    display_name="Louvain",
+    category=MethodCategory.UNSUPERVISED_QUANT,
+    description="Louvain clustering + greedy F1 label mapping.",
+    script=_p("louvain", "run_louvain_clustering.py"),
+    tabular_default=True,
+))
+_register(MethodSpec(
+    id="spade",
+    display_name="SPADE",
+    category=MethodCategory.UNSUPERVISED_QUANT,
+    description="SPADE-inspired density downsampling + hierarchical clustering.",
+    script=_p("spade", "run_spade.py"),
     tabular_default=True,
 ))
 _register(MethodSpec(
@@ -330,3 +362,39 @@ def get_dataset_artifacts(dataset_name: str) -> Dict[str, str]:
 
 def resolve_artifact(dataset_name: str, key: str) -> Optional[str]:
     return get_dataset_artifacts(dataset_name).get(key)
+
+
+DEFAULT_UNLABELED_METHODS: List[str] = ["signature", "scyan", "leiden"]
+
+_UNLABELED_CATEGORIES = frozenset({
+    MethodCategory.UNSUPERVISED_QUANT,
+    MethodCategory.PRIOR_KNOWLEDGE,
+})
+
+
+def is_unlabeled_compatible(method_id: str) -> bool:
+    """Return True if *method_id* does not require expert labels or k-folds."""
+    spec = METHOD_REGISTRY.get(method_id)
+    return spec is not None and spec.category in _UNLABELED_CATEGORIES
+
+
+def filter_unlabeled_methods(methods: List[str]) -> List[str]:
+    """Keep only prior-knowledge and unsupervised tabular methods."""
+    filtered = [m for m in methods if is_unlabeled_compatible(m)]
+    return filtered if filtered else list(DEFAULT_UNLABELED_METHODS)
+
+
+def resolve_unlabeled_methods(
+    ds_entry: dict,
+    bench_cfg: dict,
+    explicit: Optional[List[str]] = None,
+) -> List[str]:
+    """Default method list for ``--unlabeled`` benchmark runs."""
+    if explicit:
+        return filter_unlabeled_methods(explicit)
+    custom = ds_entry.get("unlabeled_methods") or bench_cfg.get("defaults", {}).get(
+        "unlabeled_methods"
+    )
+    if custom:
+        return filter_unlabeled_methods(list(custom))
+    return list(DEFAULT_UNLABELED_METHODS)

@@ -40,10 +40,12 @@ def _rule_mask(
     threshold: float,
 ) -> np.ndarray:
     """Boolean mask of which rules are satisfied for each cell (n_cells, n_rules)."""
+    rules = np.asarray(rules, dtype=float).ravel()
     n_cells = marker_values.shape[0]
     satisfied = np.ones((n_cells, len(rules)), dtype=bool)
 
-    for j, rule in enumerate(rules):
+    for j in range(len(rules)):
+        rule = rules[j]
         if np.isnan(rule) or rule == 0:
             continue
         col_vals = marker_values[:, j]
@@ -114,7 +116,10 @@ def apply_signature_rules(
     n_rules_applicable = np.zeros(len(cell_types))
 
     for i, ctype in enumerate(cell_types):
-        rules = dm.loc[ctype, marker_cols].values.astype(float)
+        row = dm.loc[ctype, marker_cols]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        rules = np.asarray(row, dtype=float).ravel()
         applicable = ~np.isnan(rules) & (rules != 0)
         n_applicable = applicable.sum()
         n_rules_applicable[i] = n_applicable

@@ -60,6 +60,17 @@ def _check_tool(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def _image_dataset_slug(ctx: DatasetContext) -> str:
+    """Return the dataset slug expected by image-method scripts (IMMUcan only)."""
+    if "immucan" in ctx.dataset_name.lower():
+        return "immucan"
+    raise MethodExecutionError(
+        f"{ctx.dataset_name} is not configured for image-based methods "
+        f"({ctx.dataset_name} ≠ IMMUcan). Remove cellsighter, stellar, virtues_*, "
+        f"eva_*, or kronos_* from benchmark.yaml for this dataset."
+    )
+
+
 def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: Optional[int] = None) -> None:
     logger.info("Running: %s", " ".join(cmd))
     result = subprocess.run(
@@ -98,6 +109,9 @@ def run_supervised_kfold(ctx: DatasetContext, spec: MethodSpec) -> Path:
     if spec.id == "maps":
         return _run_maps(ctx, out)
 
+    if spec.id in ("singler", "scarches"):
+        return _run_reference_mapping(ctx, spec.id, out)
+
     raise MethodExecutionError(f"No supervised executor for '{spec.id}'")
 
 
@@ -129,6 +143,33 @@ def _run_maps(ctx: DatasetContext, out: Path) -> Path:
     return out
 
 
+def _run_reference_mapping(ctx: DatasetContext, method_id: str, out: Path) -> Path:
+    from reference_mapping import (  # noqa: WPS433
+        run_kfold_label_transfer,
+        scarches_predict,
+        singler_predict,
+    )
+
+    kdir = ctx.kfold_dir()
+    labels = ctx.labels_path()
+    if not kdir.is_dir():
+        raise MethodExecutionError(f"K-fold directory not found: {kdir}")
+    if not labels.is_file():
+        raise MethodExecutionError(f"Labels file not found: {labels}")
+
+    predict_fn = singler_predict if method_id == "singler" else scarches_predict
+    run_kfold_label_transfer(
+        kdir,
+        labels,
+        out,
+        ctx.markers,
+        predict_fn,
+        dumb_columns=_dumb_columns_for_ml(ctx),
+    )
+    logger.info("Reference mapping (%s) → %s", method_id, out)
+    return out
+
+
 # ── Unsupervised (quant CSV) ──────────────────────────────────────────────
 
 def run_unsupervised(ctx: DatasetContext, spec: MethodSpec, iterations: int = 1) -> Path:
@@ -148,6 +189,35 @@ def run_unsupervised(ctx: DatasetContext, spec: MethodSpec, iterations: int = 1)
             "-m", *markers,
             "-it", str(iterations),
             "-r", "1.0",
+            "-l", "off",
+        ]
+        _run_cmd(cmd)
+        return out
+
+    if spec.id == "louvain":
+        cmd = [
+            sys.executable,
+            str(spec.script),
+            "-i", str(ctx.quant_path),
+            "-o", str(out),
+            "-m", *markers,
+            "-it", str(iterations),
+            "-r", "1.0",
+            "-l", "off",
+        ]
+        _run_cmd(cmd)
+        return out
+
+    if spec.id == "spade":
+        n_clusters = min(20, max(5, len(markers)))
+        cmd = [
+            sys.executable,
+            str(spec.script),
+            "-i", str(ctx.quant_path),
+            "-o", str(out),
+            "-m", *markers,
+            "-it", str(iterations),
+            "-k", str(n_clusters),
             "-l", "off",
         ]
         _run_cmd(cmd)
@@ -323,7 +393,7 @@ def run_image_pipeline(ctx: DatasetContext, spec: MethodSpec) -> Path:
     data_dir = ctx.image_data_dir
 
     if spec.id == "stellar":
-        ds_flag = "immucan" if "immucan" in ctx.dataset_name.lower() else "chl"
+        ds_flag = _image_dataset_slug(ctx)
         cmd = [
             sys.executable, str(spec.script),
             "--dataset", ds_flag,
@@ -342,7 +412,7 @@ def run_image_pipeline(ctx: DatasetContext, spec: MethodSpec) -> Path:
     if spec.id == "cellsighter":
         cmd = [
             sys.executable, str(spec.script),
-            "--dataset", "immucan" if "immucan" in ctx.dataset_name.lower() else "chl",
+            "--dataset", _image_dataset_slug(ctx),
             "--config", str(_REPO / "src" / "methods" / "CellSighter" / "cellsighter.json"),
             "--results_dir", str(out),
             "--output_root", str(data_dir),
@@ -352,11 +422,10 @@ def run_image_pipeline(ctx: DatasetContext, spec: MethodSpec) -> Path:
 
     if spec.id.startswith("eva_"):
         mode = "supervised" if "supervised" in spec.id else "leiden"
-        ds = "immucan" if "immucan" in ctx.dataset_name.lower() else "chl"
         cmd = [
             sys.executable, str(spec.script),
             mode,
-            "--dataset", ds,
+            "--dataset", _image_dataset_slug(ctx),
             "--data-dir", str(data_dir),
             "--output-dir", str(out.parent),
             "--spceleval-dir", str(ctx.root),
@@ -380,12 +449,11 @@ def run_image_pipeline(ctx: DatasetContext, spec: MethodSpec) -> Path:
 
     if spec.id.startswith("virtues_"):
         mode = "supervised" if "supervised" in spec.id else "leiden"
-        ds = "immucan" if "immucan" in ctx.dataset_name.lower() else "chl"
         virtues_dir = _REPO / "src" / "methods" / "VirTues"
         cmd = [
             sys.executable, str(spec.script),
             mode,
-            "--dataset", ds,
+            "--dataset", _image_dataset_slug(ctx),
             "--data-dir", str(data_dir),
             "--output-dir", str(out.parent),
             "--spceleval-dir", str(ctx.root),
