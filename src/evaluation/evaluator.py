@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
@@ -27,15 +28,37 @@ _UTILS = Path(__file__).resolve().parents[1] / "utils"
 if str(_UTILS) not in sys.path:
     sys.path.insert(0, str(_UTILS))
 
+from parallel import resolve_worker_count  # noqa: E402
 from prediction_files import evaluation_levels_for_file  # noqa: E402
+
+_METHODS_UTILS = Path(__file__).resolve().parents[1] / "methods" / "utils"
+if str(_METHODS_UTILS) not in sys.path:
+    sys.path.insert(0, str(_METHODS_UTILS))
+
+_BENCHMARK_DIR = Path(__file__).resolve().parents[1] / "benchmark"
+if str(_BENCHMARK_DIR) not in sys.path:
+    sys.path.insert(0, str(_BENCHMARK_DIR))
+from method_registry import METHOD_REGISTRY, MethodCategory  # noqa: E402
+
+LEVELS = ["level1", "level2", "level3"]
+
+
+def _resolve_kfold_strategy(method: str) -> Optional[str]:
+    if method.endswith("_progressive"):
+        return "ProgressiveKFold"
+    if method in METHOD_REGISTRY and METHOD_REGISTRY[method].category == MethodCategory.SUPERVISED_KFOLD:
+        return "StratifiedKFold"
+    return None
+
 
 logger = logging.getLogger(__name__)
 
-LEVELS = ["level1", "level2", "level3"]
 SUPERVISED_METRIC_COLS = [
     "accuracy", "macro_f1", "weighted_f1", "ari", "nmi", "mcc", "kappa",
     "hierarchical_f1", "g_mean", "r2_composition", "pearson_composition",
     "kl_divergence", "jensen_shannon",
+    "rare_macro_f1", "common_macro_f1", "min_class_recall", "rare_min_recall",
+    "n_rare_types", "n_common_types",
 ]
 UNSUPERVISED_METRIC_COLS = [
     "silhouette", "davies_bouldin", "spatial_entropy", "marker_consistency",
@@ -54,6 +77,8 @@ def evaluate_predictions_file(
     marker_rules: Optional[dict] = None,
     df: Optional[pd.DataFrame] = None,
     unsupervised: Optional[dict] = None,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
 ) -> dict:
     """Evaluate a single predictions CSV (supervised + unsupervised metrics)."""
     if df is None:
@@ -85,6 +110,8 @@ def evaluate_predictions_file(
         m = compute_supervised_metrics(
             yt, yp, level=level,
             hierarchy_path=str(hierarchy_path) if hierarchy_path else None,
+            rare_fraction=rare_fraction,
+            common_fraction=common_fraction,
         )
         row.update(m.to_dict())
 
@@ -117,6 +144,9 @@ def evaluate_dataset(
     quant_path: Optional[Path] = None,
     marker_cols: Optional[List[str]] = None,
     marker_rules: Optional[dict] = None,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+    parallel_jobs: Optional[int] = None,
 ) -> pd.DataFrame:
     """Evaluate all prediction files for one dataset; return per-fold results."""
     dataset_results = results_root / dataset_name
@@ -124,12 +154,19 @@ def evaluate_dataset(
         raise FileNotFoundError(f"No results directory: {dataset_results}")
 
     levels = levels or LEVELS
-    rows = []
+    workers = resolve_worker_count(parallel_jobs)
+    work_items = [
+        (method, path_level, fold_id, path, list(evaluation_levels_for_file(path, levels)))
+        for method, path_level, fold_id, path in iter_method_predictions(dataset_results, methods)
+        if evaluation_levels_for_file(path, levels)
+    ]
 
-    for method, path_level, fold_id, path in iter_method_predictions(dataset_results, methods):
-        file_levels = evaluation_levels_for_file(path, levels)
-        if not file_levels:
-            continue
+    if not work_items:
+        logger.warning("No prediction files found under %s", dataset_results)
+        return pd.DataFrame()
+
+    def _evaluate_item(item):
+        method, path_level, fold_id, path, file_levels = item
         try:
             df, unsupervised = _load_predictions_for_eval(
                 path,
@@ -139,7 +176,7 @@ def evaluate_dataset(
             )
         except Exception as exc:
             logger.warning("Skipping %s: %s", path, exc)
-            continue
+            return []
 
         perf_dir = path.parent
         while perf_dir != dataset_results and not (perf_dir / "fold_times.txt").exists():
@@ -150,6 +187,7 @@ def evaluate_dataset(
             perf_dir if (perf_dir / "fold_times.txt").exists() else path.parent
         )
 
+        item_rows = []
         for level in file_levels:
             try:
                 row = evaluate_predictions_file(
@@ -161,18 +199,32 @@ def evaluate_dataset(
                     marker_rules=marker_rules,
                     df=df,
                     unsupervised=unsupervised,
+                    rare_fraction=rare_fraction,
+                    common_fraction=common_fraction,
                 )
                 row["dataset"] = dataset_name
                 row["method"] = method
+                row["kfold_strategy"] = _resolve_kfold_strategy(method)
                 row["fold"] = fold_id
                 row["path_level"] = path_level
                 row.update(perf.to_dict())
-                rows.append(row)
+                item_rows.append(row)
             except Exception as exc:
                 logger.warning("Skipping %s [%s]: %s", path, level, exc)
+        return item_rows
+
+    rows: List[dict] = []
+    if workers <= 1 or len(work_items) <= 1:
+        for item in work_items:
+            rows.extend(_evaluate_item(item))
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(work_items))) as pool:
+            futures = [pool.submit(_evaluate_item, item) for item in work_items]
+            for future in as_completed(futures):
+                rows.extend(future.result())
 
     if not rows:
-        logger.warning("No prediction files found under %s", dataset_results)
+        logger.warning("No prediction files evaluated under %s", dataset_results)
         return pd.DataFrame()
 
     return pd.DataFrame(rows)

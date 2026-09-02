@@ -37,6 +37,23 @@ def test_compute_supervised_metrics():
     assert m.ari >= 0
 
 
+def test_rare_type_metrics():
+    from metrics import compute_rare_type_metrics, per_class_metrics_table  # noqa: E402
+
+    yt = pd.Series(["Common"] * 97 + ["Rare"] * 3)
+    yp = pd.Series(["Common"] * 95 + ["Rare"] * 2 + ["Common"] * 2 + ["Rare"] * 1)
+    rare = compute_rare_type_metrics(yt, yp, rare_fraction=0.05, common_fraction=0.10)
+    assert rare["n_rare_types"] == 1
+    assert rare["n_common_types"] == 1
+    assert rare["most_common_type"] == "Common"
+    assert rare["rarest_type"] == "Rare"
+    assert rare["rare_macro_f1"] is not None
+
+    table = per_class_metrics_table(yt, yp, rare_fraction=0.05, common_fraction=0.10)
+    assert set(table["frequency_tier"]) <= {"rare", "common", "intermediate"}
+    assert len(table) == 2
+
+
 def test_normalize_columns():
     df = pd.DataFrame({"cell_type": ["A"], "predicted_phenotype": ["A"]})
     out = normalize_columns(df.rename(columns={"cell_type": "true_phenotype"}))

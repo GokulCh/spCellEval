@@ -6,7 +6,9 @@ Supervised, unsupervised, and distribution-recovery metrics.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 import numpy as np
@@ -25,6 +27,16 @@ from sklearn.metrics import (
 
 from hierarchy import parse_ancestor_map
 
+# Re-use frequency tier logic from k-fold utilities when available.
+_METHODS_UTILS = Path(__file__).resolve().parents[1] / "methods" / "utils"
+if str(_METHODS_UTILS) not in sys.path:
+    sys.path.insert(0, str(_METHODS_UTILS))
+
+try:
+    from kfold_strategies import frequency_tiers_from_series  # noqa: E402
+except ImportError:
+    frequency_tiers_from_series = None  # type: ignore
+
 
 @dataclass
 class SupervisedMetrics:
@@ -42,6 +54,15 @@ class SupervisedMetrics:
     kl_divergence: Optional[float] = None
     jensen_shannon: Optional[float] = None
     n_cells: int = 0
+    # Rare / common cell-type benchmark metrics (optional).
+    rare_macro_f1: Optional[float] = None
+    common_macro_f1: Optional[float] = None
+    min_class_recall: Optional[float] = None
+    rare_min_recall: Optional[float] = None
+    n_rare_types: Optional[int] = None
+    n_common_types: Optional[int] = None
+    most_common_type: Optional[str] = None
+    rarest_type: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -104,12 +125,134 @@ def composition_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict:
     return {"r2": r2, "pearson": pearson, "kl_divergence": kl, "jensen_shannon": js}
 
 
+def _tiered_subset_f1(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    tiers: Dict[str, str],
+    tier_name: str,
+) -> Optional[float]:
+    labels = [lbl for lbl, tier in tiers.items() if tier == tier_name]
+    if not labels:
+        return None
+    mask = y_true.isin(labels)
+    if not mask.any():
+        return None
+    return float(
+        f1_score(
+            y_true[mask],
+            y_pred[mask],
+            labels=labels,
+            average="macro",
+            zero_division=0,
+        )
+    )
+
+
+def _min_recall_for_labels(y_true: pd.Series, y_pred: pd.Series, labels: list) -> Optional[float]:
+    if not labels:
+        return None
+    recalls = []
+    for label in labels:
+        mask = y_true == label
+        if not mask.any():
+            continue
+        recalls.append(float((y_pred[mask] == label).mean()))
+    return float(min(recalls)) if recalls else None
+
+
+def compute_rare_type_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    *,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+) -> dict:
+    """Benchmark metrics focused on rare and common cell populations."""
+    yt = y_true.dropna().astype(str)
+    yp = y_pred.dropna().astype(str)
+    if len(yt) == 0:
+        return {}
+
+    if frequency_tiers_from_series is not None:
+        tiers = frequency_tiers_from_series(
+            yt, rare_fraction=rare_fraction, common_fraction=common_fraction,
+        )
+    else:
+        counts = yt.value_counts(normalize=True)
+        tiers = {
+            lbl: ("rare" if frac < rare_fraction else "common" if frac >= common_fraction else "intermediate")
+            for lbl, frac in counts.items()
+        }
+
+    rare_labels = [lbl for lbl, t in tiers.items() if t == "rare"]
+    common_labels = [lbl for lbl, t in tiers.items() if t == "common"]
+    counts = yt.value_counts()
+
+    return {
+        "rare_macro_f1": _tiered_subset_f1(yt, yp, tiers, "rare"),
+        "common_macro_f1": _tiered_subset_f1(yt, yp, tiers, "common"),
+        "min_class_recall": _min_recall_for_labels(yt, yp, sorted(yt.unique())),
+        "rare_min_recall": _min_recall_for_labels(yt, yp, rare_labels),
+        "n_rare_types": len(rare_labels),
+        "n_common_types": len(common_labels),
+        "most_common_type": counts.index[0] if len(counts) else None,
+        "rarest_type": counts.index[-1] if len(counts) else None,
+    }
+
+
+def per_class_metrics_table(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    *,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+) -> pd.DataFrame:
+    """Per-phenotype recall, F1, support, and frequency tier."""
+    yt = y_true.dropna().astype(str)
+    yp = y_pred.dropna().astype(str)
+    labels = sorted(set(yt) | set(yp))
+    if not labels:
+        return pd.DataFrame()
+
+    if frequency_tiers_from_series is not None:
+        tiers = frequency_tiers_from_series(
+            yt, rare_fraction=rare_fraction, common_fraction=common_fraction,
+        )
+    else:
+        norm = yt.value_counts(normalize=True)
+        tiers = {
+            lbl: ("rare" if norm.get(lbl, 0) < rare_fraction else "common" if norm.get(lbl, 0) >= common_fraction else "intermediate")
+            for lbl in labels
+        }
+
+    support = yt.value_counts()
+    total = int(support.sum())
+    rows = []
+    for label in labels:
+        mask = yt == label
+        sup = int(support.get(label, 0))
+        rec = float((yp[mask] == label).mean()) if sup else 0.0
+        f1 = float(f1_score(yt == label, yp == label, zero_division=0))
+        rows.append({
+            "phenotype": label,
+            "support": sup,
+            "fraction": sup / total if total else 0.0,
+            "frequency_tier": tiers.get(label, "intermediate"),
+            "recall": rec,
+            "f1": f1,
+        })
+    return pd.DataFrame(rows).sort_values("support", ascending=False)
+
+
 def compute_supervised_metrics(
     y_true: pd.Series,
     y_pred: pd.Series,
     *,
     level: str = "level3",
     hierarchy_path: Optional[str] = None,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+    include_rare_metrics: bool = True,
 ) -> SupervisedMetrics:
     """Compute classification + clustering agreement metrics."""
     mask = y_true.notna() & y_pred.notna()
@@ -127,6 +270,14 @@ def compute_supervised_metrics(
         anc = parse_ancestor_map(hierarchy_path) if hierarchy_path else parse_ancestor_map()
         h_f1 = hierarchical_f1_score(yt, yp, anc)
 
+    rare_metrics = (
+        compute_rare_type_metrics(
+            yt, yp, rare_fraction=rare_fraction, common_fraction=common_fraction,
+        )
+        if include_rare_metrics
+        else {}
+    )
+
     return SupervisedMetrics(
         accuracy=float((yt == yp).mean()),
         macro_f1=float(f1_score(yt, yp, average="macro", zero_division=0)),
@@ -142,6 +293,7 @@ def compute_supervised_metrics(
         kl_divergence=comp["kl_divergence"],
         jensen_shannon=comp["jensen_shannon"],
         n_cells=n,
+        **rare_metrics,
     )
 
 

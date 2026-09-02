@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
 
@@ -56,6 +56,8 @@ from dataset_context import DatasetContext  # noqa: E402
 from executors import MethodExecutionError, execute_method  # noqa: E402
 from method_registry import METHOD_REGISTRY, MethodCategory, list_methods  # noqa: E402
 from method_registry import resolve_unlabeled_methods, filter_unlabeled_methods  # noqa: E402
+from parallel import resolve_ml_n_jobs, resolve_worker_count  # noqa: E402
+from parallel_runner import build_method_payloads, run_method_job  # noqa: E402
 from pipeline_logging import PipelineLogSession  # noqa: E402
 
 logger = logging.getLogger("run_benchmark")
@@ -97,6 +99,9 @@ def run_benchmark(
     spatial_smooth: Optional[bool] = None,
     spatial_k_neighbors: int = 15,
     unlabeled: bool = False,
+    kfold_method: Optional[str] = None,
+    kfold_methods: Optional[List[str]] = None,
+    parallel_jobs: Optional[int] = None,
 ) -> dict:
     bench_cfg = _load_benchmark_config(bench_config_path)
     ds_entry = _resolve_dataset_entry(bench_cfg, dataset_name)
@@ -104,11 +109,27 @@ def run_benchmark(
     defaults = bench_cfg.get("defaults", {})
     do_spatial = defaults.get("spatial_smooth", False) if spatial_smooth is None else spatial_smooth
     k_spatial = defaults.get("spatial_k_neighbors", spatial_k_neighbors)
+    if kfold_methods:
+        resolved_kfold_methods = list(kfold_methods)
+    elif kfold_method:
+        resolved_kfold_methods = [kfold_method]
+    else:
+        resolved_kfold_methods = list(
+            ds_entry.get(
+                "kfold_methods",
+                defaults.get("kfold_methods", ["StratifiedKFold", "ProgressiveKFold"]),
+            )
+        )
+
     overrides = {
-        "kfold_method": ds_entry.get("kfold_method", defaults.get("kfold_method", "StratifiedKFold")),
+        "kfold_method": resolved_kfold_methods[0],
+        "kfold_methods": resolved_kfold_methods,
         "granularity": ds_entry.get("granularity", defaults.get("granularity", "level3")),
         "phenotype_column": ds_entry.get("phenotype_column", defaults.get("phenotype_column", "cell_type")),
         "batch_column": ds_entry.get("batch_column", defaults.get("batch_column", "batch_id")),
+        "n_splits": ds_entry.get("n_splits", defaults.get("n_splits", 5)),
+        "rare_fraction": ds_entry.get("rare_fraction", defaults.get("rare_fraction", 0.01)),
+        "common_fraction": ds_entry.get("common_fraction", defaults.get("common_fraction", 0.05)),
         "image_data_dir": ds_entry.get("image_data_dir"),
     }
 
@@ -124,50 +145,87 @@ def run_benchmark(
         logger.info("Unlabeled mode — methods: %s", ", ".join(methods))
     else:
         if recreate_kfolds:
-            kdir = ctx.kfold_dir()
-            if kdir.is_dir():
-                shutil.rmtree(kdir)
-            labels = ctx.labels_path()
-            if labels.is_file():
-                labels.unlink()
+            ctx.remove_kfolds()
         if ensure_kfolds or recreate_kfolds:
             ctx.ensure_kfolds(strip_labels=defaults.get("strip_labels", True))
 
+    workers = resolve_worker_count(
+        parallel_jobs if parallel_jobs is not None else defaults.get("parallel_jobs", 0)
+    )
+    ml_n_jobs = resolve_ml_n_jobs(workers)
     results = {"succeeded": [], "skipped": [], "failed": []}
 
-    for method_id in methods:
-        if method_id not in METHOD_REGISTRY:
-            logger.error("Unknown method '%s' — run --list_methods to see options.", method_id)
-            results["failed"].append((method_id, "unknown method"))
-            if fail_fast:
-                break
-            continue
+    known_methods = [m for m in methods if m in METHOD_REGISTRY]
+    unknown = [m for m in methods if m not in METHOD_REGISTRY]
+    for method_id in unknown:
+        logger.error("Unknown method '%s' — run --list_methods to see options.", method_id)
+        results["failed"].append((method_id, "unknown method"))
 
-        spec = METHOD_REGISTRY[method_id]
-        logger.info("=" * 60)
-        logger.info(
-            "Method: %s [%s] — %s",
-            spec.display_name,
-            spec.category.value,
-            spec.description,
-        )
+    if fail_fast and unknown:
+        return results
 
-        try:
-            out = execute_method(
-                ctx, spec,
-                iterations=iterations,
-                skip_missing_deps=skip_missing_deps,
-                spatial_smooth=do_spatial,
-                spatial_k_neighbors=k_spatial,
+    def _record(method_id: str, status: str, path: Optional[str], error: Optional[str]) -> bool:
+        if status == "succeeded":
+            results["succeeded"].append((method_id, path or ""))
+            return True
+        if status == "skipped":
+            results["skipped"].append(method_id)
+            return True
+        results["failed"].append((method_id, error or "failed"))
+        return False
+
+    if workers <= 1 or len(known_methods) <= 1:
+        for method_id in known_methods:
+            spec = METHOD_REGISTRY[method_id]
+            logger.info("=" * 60)
+            logger.info(
+                "Method: %s [%s] — %s",
+                spec.display_name,
+                spec.category.value,
+                spec.description,
             )
-            if out is None:
-                results["skipped"].append(method_id)
-            else:
-                results["succeeded"].append((method_id, str(out)))
-        except MethodExecutionError as exc:
-            logger.error("FAIL %s: %s", method_id, exc)
-            results["failed"].append((method_id, str(exc)))
-            if fail_fast:
+            try:
+                out = execute_method(
+                    ctx, spec,
+                    iterations=iterations,
+                    skip_missing_deps=skip_missing_deps,
+                    spatial_smooth=do_spatial,
+                    spatial_k_neighbors=k_spatial,
+                    ml_n_jobs=ml_n_jobs,
+                )
+                if out is None:
+                    results["skipped"].append(method_id)
+                else:
+                    results["succeeded"].append((method_id, str(out)))
+            except MethodExecutionError as exc:
+                logger.error("FAIL %s: %s", method_id, exc)
+                results["failed"].append((method_id, str(exc)))
+                if fail_fast:
+                    break
+        return results
+
+    logger.info("Running %d methods with %d parallel workers", len(known_methods), workers)
+    payloads = build_method_payloads(
+        methods=known_methods,
+        config_path=ds_config_path,
+        root=root,
+        benchmark_overrides=overrides,
+        artifacts=ds_entry.get("artifacts"),
+        iterations=iterations,
+        skip_missing_deps=skip_missing_deps,
+        spatial_smooth=do_spatial,
+        spatial_k_neighbors=k_spatial,
+        ml_n_jobs=ml_n_jobs,
+    )
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(run_method_job, payload): payload["method_id"] for payload in payloads}
+        for future in as_completed(futures):
+            method_id, status, path, error = future.result()
+            logger.info("Method %s finished: %s", method_id, status)
+            if not _record(method_id, status, path, error) and fail_fast:
+                for pending in futures:
+                    if not pending.done():
+                        pending.cancel()
                 break
 
     return results
@@ -261,6 +319,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run without expert labels: skip k-folds, use prior-knowledge + clustering methods only.",
     )
+    p.add_argument(
+        "--kfold_method",
+        type=str,
+        choices=["StratifiedKFold", "ProgressiveKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
+        default=None,
+        help="Override k-fold strategy from benchmark config (default: StratifiedKFold).",
+    )
+    p.add_argument(
+        "--parallel_jobs",
+        type=int,
+        default=None,
+        help="Number of benchmark methods to run in parallel (0=auto, 1=sequential).",
+    )
     p.add_argument("--list_methods", action="store_true", help="Print method catalog and exit.")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
@@ -299,6 +370,16 @@ def _run_benchmark_cli(args: argparse.Namespace) -> None:
 
     logger.info("Dataset : %s", args.dataset)
     logger.info("Methods : %s", ", ".join(methods))
+    if args.kfold_method:
+        logger.info("K-fold strategies: %s (CLI override)", args.kfold_method)
+    else:
+        ds_defaults = bench_cfg.get("defaults", {})
+        ds_entry = bench_cfg.get("datasets", {}).get(args.dataset, {})
+        strategies = ds_entry.get(
+            "kfold_methods",
+            ds_defaults.get("kfold_methods", ["StratifiedKFold", "ProgressiveKFold"]),
+        )
+        logger.info("K-fold strategies: %s", ", ".join(strategies))
 
     summary = run_benchmark(
         dataset_name=args.dataset,
@@ -312,6 +393,8 @@ def _run_benchmark_cli(args: argparse.Namespace) -> None:
         fail_fast=args.fail_fast,
         spatial_smooth=False if args.no_spatial_smooth else None,
         unlabeled=args.unlabeled,
+        kfold_method=args.kfold_method,
+        parallel_jobs=args.parallel_jobs,
     )
 
     print("\n" + "=" * 60)

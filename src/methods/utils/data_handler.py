@@ -4,7 +4,14 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold, train_test_split, GroupShuffleSplit, ShuffleSplit
 from sklearn.preprocessing import LabelEncoder
-from typing import List
+from typing import List, Optional
+
+from kfold_strategies import (
+    KFOLD_METHODS,
+    build_cell_type_representation,
+    fold_representation_table,
+    progressive_kfold_splits,
+)
 
 class DataSetHandler:
     def __init__(self, path, random_state):
@@ -72,17 +79,38 @@ class DataSetHandler:
         print("Data successfully preprocessed")
     
 
-    def createFolds(self, k: int, method:str, batch_identifier_column:str = None, group_shuffle_split_size:float = 0.5, swap_train_test:bool=False) -> None:
+    def createFolds(
+        self,
+        k: int,
+        method: str,
+        batch_identifier_column: str = None,
+        group_shuffle_split_size: float = 0.5,
+        swap_train_test: bool = False,
+        *,
+        rare_fraction: float = 0.01,
+        common_fraction: float = 0.05,
+    ) -> None:
         """
-        Creates StratifiedKfolds.
-        Folds will be carried by the fold_data attribute.
+        Create k-fold splits.
+
+        Supported methods: StratifiedKFold, ProgressiveKFold, StratifiedGroupKFold,
+        GroupShuffleSplit (see ``kfold_strategies.KFOLD_METHODS``).
         """
         self.method = method
+        self.rare_fraction = rare_fraction
+        self.common_fraction = common_fraction
         if not isinstance(k, int):
             raise TypeError("k must be an integer")
-        
+        if method not in KFOLD_METHODS:
+            raise ValueError(
+                f"Invalid method '{method}'. Use one of: {', '.join(KFOLD_METHODS)}."
+            )
+
         print(f'{method} method selected for creating folds')
-        if method == 'StratifiedGroupKFold':
+        if method == 'ProgressiveKFold':
+            self.kfolds = None
+            self.fold_indices = progressive_kfold_splits(self.Y, k, random_state=self.random_state)
+        elif method == 'StratifiedGroupKFold':
             if (batch_identifier_column is None) or (batch_identifier_column not in self.X.columns):
                 print("batch_identifier_column not specified, reverting to StratifiedKFold")
                 self.kfolds = StratifiedKFold(n_splits=k, random_state=self.random_state, shuffle=True)
@@ -110,10 +138,14 @@ class DataSetHandler:
                 groups = self.X[batch_identifier_column]
                 fold_generator = splitter.split(self.X, self.Y, groups)
         else:
-            raise ValueError("Invalid method specified. Use 'StratifiedGroupKFold', 'StratifiedKFold', or 'GroupShuffleSplit'.")
-            
-        self.fold_indices = list(fold_generator)
-        
+            raise ValueError(
+                "Invalid method specified. Use one of: "
+                + ", ".join(KFOLD_METHODS)
+                + "."
+            )
+
+        if method != 'ProgressiveKFold':
+            self.fold_indices = list(fold_generator)
 
         self.fold_data = []
         if swap_train_test:
@@ -132,6 +164,50 @@ class DataSetHandler:
             self.fold_data.append(fold)
         
         print(f"{k} folds created. To save the folds, call save_folds method.")
+
+    def save_cell_type_representation(
+        self,
+        save_path: str,
+        *,
+        rare_fraction: Optional[float] = None,
+        common_fraction: Optional[float] = None,
+    ) -> pd.DataFrame:
+        """Write global and per-fold cell-type abundance tables."""
+        if self.labels is None or self.Y is None or self.fold_indices is None:
+            raise ValueError("Call preprocess() and createFolds() before saving representation.")
+
+        rare_fraction = self.rare_fraction if rare_fraction is None else rare_fraction
+        common_fraction = self.common_fraction if common_fraction is None else common_fraction
+
+        global_repr = build_cell_type_representation(
+            self.labels,
+            self.Y,
+            rare_fraction=rare_fraction,
+            common_fraction=common_fraction,
+        )
+        global_repr.to_csv(
+            os.path.join(save_path, "cell_type_representation.csv"),
+            index=False,
+        )
+
+        fold_tables = []
+        for i, (train_idx, test_idx) in enumerate(self.fold_indices, start=1):
+            fold_tables.append(
+                fold_representation_table(
+                    self.Y,
+                    train_idx,
+                    test_idx,
+                    self.labels,
+                    fold=i,
+                    rare_fraction=rare_fraction,
+                    common_fraction=common_fraction,
+                )
+            )
+        fold_repr = pd.concat(fold_tables, ignore_index=True)
+        kfolds_dir = os.path.join(save_path, f"kfolds_{self.method}_{self.granularity_level}")
+        os.makedirs(kfolds_dir, exist_ok=True)
+        fold_repr.to_csv(os.path.join(kfolds_dir, "fold_cell_type_representation.csv"), index=False)
+        return global_repr
 
     def save_labels(self, save_path: str = None) -> None:
         if self.labels is None:
@@ -154,9 +230,19 @@ class DataSetHandler:
         kfolds_dir = os.path.join(save_path, f'kfolds_{self.method}_{self.granularity_level}')
         os.makedirs(kfolds_dir, exist_ok=True)
 
+        fold_meta = []
+        for i, (train, test) in enumerate(self.fold_indices):
+            entry = {'fold': i + 1, 'train': train.tolist(), 'test': test.tolist()}
+            if self.method == 'ProgressiveKFold':
+                entry['progressive_train_fraction'] = (i + 1) / len(self.fold_indices)
+                entry['n_train'] = len(train)
+                entry['n_test'] = len(test)
+            fold_meta.append(entry)
+
         fold_data = {
             'random_state': self.random_state,
-            'folds': [{'fold': i+1, 'train': train.tolist(), 'test': test.tolist()} for i, (train, test) in enumerate(self.fold_indices)]
+            'kfold_method': self.method,
+            'folds': fold_meta,
         }
 
 

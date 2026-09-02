@@ -30,24 +30,23 @@ def postprocess_predictions_dir(
     *,
     overwrite: bool = False,
     k_neighbors: int = 15,
+    parallel_jobs: int = 1,
 ) -> int:
     """Apply spatial smoothing to all ``predictions_*.csv`` under *result_dir*."""
     if not result_dir.is_dir():
         return 0
 
-    processed = 0
-    for pred_path in sorted(result_dir.rglob("predictions_*.csv")):
-        if pred_path.name.endswith("_spatial.csv"):
-            continue
-        if not should_apply_spatial_smoothing(pred_path, quant_path):
-            logger.info(
-                "Skipping spatial smoothing for %s (cross-validation or sparse subset).",
-                pred_path.name,
-            )
-            continue
-        out_path = pred_path if overwrite else pred_path.with_name(
-            pred_path.stem + "_spatial.csv"
-        )
+    pred_paths = [
+        pred_path
+        for pred_path in sorted(result_dir.rglob("predictions_*.csv"))
+        if not pred_path.name.endswith("_spatial.csv")
+        and should_apply_spatial_smoothing(pred_path, quant_path)
+    ]
+    if not pred_paths:
+        return 0
+
+    def _smooth_one(pred_path: Path) -> int:
+        out_path = pred_path if overwrite else pred_path.with_name(pred_path.stem + "_spatial.csv")
         smooth_predictions_file(
             str(pred_path),
             quant_path=str(quant_path),
@@ -58,9 +57,22 @@ def postprocess_predictions_dir(
         if "spatial_smoothed_phenotype" in df.columns:
             df["predicted_phenotype"] = df["spatial_smoothed_phenotype"]
             df.to_csv(out_path, index=False)
-        processed += 1
         logger.info("Spatial post-process: %s -> %s", pred_path.name, out_path.name)
-    return processed
+        return 1
+
+    if parallel_jobs <= 1 or len(pred_paths) == 1:
+        return sum(_smooth_one(path) for path in pred_paths)
+
+    from parallel import parallel_map
+
+    return sum(
+        parallel_map(
+            _smooth_one,
+            pred_paths,
+            max_workers=parallel_jobs,
+            description="spatial smoothing files",
+        )
+    )
 
 
 def export_spatial_graph_summary(

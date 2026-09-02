@@ -54,6 +54,8 @@ for _p in [
 
 from method_registry import resolve_unlabeled_methods  # noqa: E402
 from pipeline_logging import PipelineLogSession, log_command_banner  # noqa: E402
+from parallel import parallel_map, resolve_worker_count  # noqa: E402
+from prediction_files import RESULTS_NON_METHOD_DIRS  # noqa: E402
 
 logger = logging.getLogger("run_pipeline")
 
@@ -88,6 +90,8 @@ def run_pipeline(
     pseudo_label: bool = False,
     pseudo_method: str = "signature",
     unlabeled: bool = False,
+    kfold_method: Optional[str] = None,
+    parallel_jobs: Optional[int] = None,
     benchmark_config: Optional[Path] = None,
     root: Path = _REPO,
     parent_log_active: bool = False,
@@ -113,6 +117,10 @@ def run_pipeline(
     quant_file = ds_cfg.get("output", {}).get("output_filename", f"{dataset}_quantification.csv")
     quant_path = quant_dir / quant_file
     features_path = quant_dir / f"{dataset}_features_only.csv"
+
+    workers = resolve_worker_count(
+        parallel_jobs if parallel_jobs is not None else bench_cfg.get("defaults", {}).get("parallel_jobs", 0)
+    )
 
     stages = {}
 
@@ -188,6 +196,10 @@ def run_pipeline(
             cmd.append("--recreate_kfolds")
         elif ensure_kfolds:
             cmd.append("--ensure_kfolds")
+        if kfold_method:
+            cmd.extend(["--kfold_method", kfold_method])
+        if workers > 1:
+            cmd.extend(["--parallel_jobs", str(workers)])
         if parent_log_active:
             cmd = _append_no_log(cmd)
         _run_script(cmd, stage="benchmark")
@@ -201,11 +213,24 @@ def run_pipeline(
 
         graph_method = pipeline_defaults.get("graph_method", "both")
         results_root = root / "results" / dataset
-        n_files = 0
+        method_dirs = []
         if results_root.is_dir():
-            for method_dir in results_root.iterdir():
-                if method_dir.is_dir() and method_dir.name not in {"summary", "logs"}:
-                    n_files += postprocess_predictions_dir(method_dir, quant_path)
+            method_dirs = [
+                method_dir
+                for method_dir in results_root.iterdir()
+                if method_dir.is_dir() and method_dir.name not in RESULTS_NON_METHOD_DIRS
+            ]
+
+        n_files = sum(
+            parallel_map(
+                lambda method_dir: postprocess_predictions_dir(
+                    method_dir, quant_path, parallel_jobs=workers
+                ),
+                method_dirs,
+                max_workers=workers,
+                description="spatial post-processing",
+            )
+        )
 
         graph_path = None
         if export_graphs:
@@ -217,11 +242,14 @@ def run_pipeline(
                 graph_method=graph_method,
             )
             if results_root.is_dir():
-                for method_dir in results_root.iterdir():
-                    if method_dir.is_dir() and method_dir.name not in {"summary", "logs"}:
-                        attach_spatial_artifacts(
-                            quant_path, method_dir, graph_method=graph_method, export_edges=False,
-                        )
+                parallel_map(
+                    lambda method_dir: attach_spatial_artifacts(
+                        quant_path, method_dir, graph_method=graph_method, export_edges=False,
+                    ),
+                    method_dirs,
+                    max_workers=workers,
+                    description="spatial artifact export",
+                )
         stages["spatial"] = {
             "smoothed_files": n_files,
             "graph_summary": str(graph_path) if graph_path else None,
@@ -241,6 +269,8 @@ def run_pipeline(
             eval_cmd.append("--plot")
         if unlabeled:
             eval_cmd.append("--unlabeled")
+        if workers > 1:
+            eval_cmd.extend(["--parallel_jobs", str(workers)])
         if parent_log_active:
             eval_cmd = _append_no_log(eval_cmd)
         _run_script(eval_cmd, stage="evaluation")
@@ -279,6 +309,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clinical/unannotated mode: skip GT ingest & k-folds; run signature/scyan/leiden.",
     )
     p.add_argument("--recreate_kfolds", action="store_true")
+    p.add_argument(
+        "--kfold_method",
+        type=str,
+        choices=["StratifiedKFold", "ProgressiveKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
+        default=None,
+        help="K-fold strategy for supervised methods (default from configs/benchmark.yaml).",
+    )
+    p.add_argument(
+        "--parallel_jobs",
+        type=int,
+        default=None,
+        help="Parallel workers for benchmark/spatial stages (0=auto, 1=sequential).",
+    )
     p.add_argument(
         "--benchmark_config",
         type=Path,
@@ -320,6 +363,8 @@ def main() -> None:
             pseudo_label=args.pseudo_label,
             pseudo_method=args.pseudo_method,
             unlabeled=args.unlabeled,
+            kfold_method=args.kfold_method,
+            parallel_jobs=args.parallel_jobs,
             benchmark_config=args.benchmark_config,
             root=root,
             parent_log_active=not args.no_log_file,

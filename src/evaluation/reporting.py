@@ -16,6 +16,7 @@ from sklearn.metrics import confusion_matrix
 from prediction_io import (
     iter_method_predictions,
     normalize_columns,
+    resolve_labels_for_level,
 )
 from quant_merge import enrich_from_quant
 
@@ -237,3 +238,111 @@ def export_all_report_tables(
             written[f"confusion_{method}"] = cm
 
     return written
+
+
+def export_cell_type_representation_table(
+    quant_path: Path,
+    output_dir: Path,
+    *,
+    label_col: str = "cell_type",
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+) -> Optional[Path]:
+    """Export ranked cell-type abundance with rare/common tiers."""
+    if not quant_path.is_file():
+        return None
+
+    _METHODS_UTILS = Path(__file__).resolve().parents[1] / "methods" / "utils"
+    import sys
+    if str(_METHODS_UTILS) not in sys.path:
+        sys.path.insert(0, str(_METHODS_UTILS))
+    from kfold_strategies import build_cell_type_representation  # noqa: WPS433
+    from sklearn.preprocessing import LabelEncoder  # noqa: WPS433
+
+    quant = pd.read_csv(quant_path)
+    if label_col not in quant.columns:
+        return None
+
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(quant[label_col].astype(str))
+    labels = pd.DataFrame({
+        "label": range(len(encoder.classes_)),
+        "phenotype": encoder.classes_,
+    })
+    repr_df = build_cell_type_representation(
+        labels,
+        y,
+        rare_fraction=rare_fraction,
+        common_fraction=common_fraction,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "cell_type_representation.csv"
+    repr_df.to_csv(path, index=False)
+    return path
+
+
+def export_per_class_metrics_tables(
+    dataset_results: Path,
+    output_dir: Path,
+    *,
+    methods: Optional[List[str]] = None,
+    level: str = "level3",
+    quant_path: Optional[Path] = None,
+    marker_cols: Optional[List[str]] = None,
+    rare_fraction: float = 0.01,
+    common_fraction: float = 0.05,
+) -> Dict[str, Path]:
+    """Export per-phenotype recall/F1 tables for each evaluated method."""
+    from metrics import per_class_metrics_table  # noqa: WPS433
+
+    written: Dict[str, Path] = {}
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for method, _lvl, _fold, path in iter_method_predictions(dataset_results, methods):
+        preds = normalize_columns(pd.read_csv(path))
+        preds = enrich_from_quant(preds, quant_path, marker_cols=marker_cols)
+        yt, yp = resolve_labels_for_level(preds, level)
+        if yt is None or yp is None:
+            continue
+        table = per_class_metrics_table(
+            yt, yp, rare_fraction=rare_fraction, common_fraction=common_fraction,
+        )
+        if table.empty:
+            continue
+        table.insert(0, "method", method)
+        table.insert(1, "fold_file", path.name)
+        out_path = output_dir / f"per_class_metrics_{method}.csv"
+        if out_path.is_file():
+            table = pd.concat([pd.read_csv(out_path), table], ignore_index=True)
+        table.to_csv(out_path, index=False)
+        written[method] = out_path
+
+    return written
+
+
+def export_rare_type_benchmark_summary(
+    per_fold: pd.DataFrame,
+    output_dir: Path,
+    *,
+    level: str = "level3",
+) -> Optional[Path]:
+    """Aggregate rare-type benchmark metrics across methods."""
+    cols = [
+        "method", "fold", "rare_macro_f1", "common_macro_f1",
+        "min_class_recall", "rare_min_recall", "n_rare_types", "n_common_types",
+        "most_common_type", "rarest_type",
+    ]
+    present = [c for c in cols if c in per_fold.columns]
+    if "method" not in present:
+        return None
+
+    df = per_fold[per_fold["level"] == level][present].copy()
+    if df.empty:
+        return None
+
+    numeric = [c for c in present if c not in {"method", "fold", "most_common_type", "rarest_type"}]
+    agg = df.groupby("method", as_index=False)[numeric].mean(numeric_only=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "rare_type_benchmark_summary.csv"
+    agg.to_csv(path, index=False)
+    return path

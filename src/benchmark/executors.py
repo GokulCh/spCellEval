@@ -13,7 +13,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional, Tuple
 
 from dataset_context import DatasetContext
 from method_registry import MethodCategory, MethodSpec, resolve_artifact
@@ -98,60 +99,104 @@ def _dumb_columns_for_ml(ctx: DatasetContext) -> List[str]:
 
 # ── Supervised k-fold ─────────────────────────────────────────────────────
 
-def run_supervised_kfold(ctx: DatasetContext, spec: MethodSpec) -> Path:
-    ctx.ensure_kfolds(strip_labels=True)
-    out = ctx.results_dir(spec.id)
+def run_supervised_kfold(ctx: DatasetContext, spec: MethodSpec, *, ml_n_jobs: int = -1) -> Path:
+    from kfold_strategies import result_method_id  # noqa: WPS433
+
+    primary_out: Optional[Path] = None
+    strategies: List[Tuple[str, Path]] = []
+
+    def _run_one(kfold_method: str) -> Tuple[str, Path]:
+        start = time.time()
+        out = _run_supervised_kfold_strategy(ctx, spec, kfold_method, ml_n_jobs=ml_n_jobs)
+        write_run_manifest(
+            out / "benchmark_manifest.json",
+            result_method_id(spec.id, kfold_method),
+            elapsed_sec=time.time() - start,
+        )
+        return kfold_method, out
+
+    if len(ctx.kfold_methods) > 1 and ml_n_jobs == -1:
+        with ThreadPoolExecutor(max_workers=len(ctx.kfold_methods)) as pool:
+            futures = [pool.submit(_run_one, m) for m in ctx.kfold_methods]
+            for future in as_completed(futures):
+                kfold_method, out = future.result()
+                strategies.append((kfold_method, out))
+    else:
+        for kfold_method in ctx.kfold_methods:
+            strategies.append(_run_one(kfold_method))
+
+    for kfold_method, out in strategies:
+        if kfold_method == "StratifiedKFold" or primary_out is None:
+            primary_out = out
+    if primary_out is None:
+        raise MethodExecutionError(f"No k-fold results produced for '{spec.id}'")
+    return primary_out
+
+
+def _run_supervised_kfold_strategy(
+    ctx: DatasetContext,
+    spec: MethodSpec,
+    kfold_method: str,
+    *,
+    ml_n_jobs: int = -1,
+) -> Path:
+    out = ctx.results_dir(spec.id, kfold_method)
     out.mkdir(parents=True, exist_ok=True)
 
     if spec.id in ("random_forest", "logistic_regression", "xgboost"):
-        return _run_classic_ml(ctx, spec.id, out)
+        return _run_classic_ml(ctx, spec.id, out, kfold_method, n_jobs=ml_n_jobs)
 
     if spec.id == "maps":
-        return _run_maps(ctx, out)
+        return _run_maps(ctx, out, kfold_method)
 
     if spec.id in ("singler", "scarches"):
-        return _run_reference_mapping(ctx, spec.id, out)
+        return _run_reference_mapping(ctx, spec.id, out, kfold_method)
 
     raise MethodExecutionError(f"No supervised executor for '{spec.id}'")
 
 
-def _run_classic_ml(ctx: DatasetContext, model: str, out: Path) -> Path:
+def _run_classic_ml(ctx: DatasetContext, model: str, out: Path, kfold_method: str, *, n_jobs: int = -1) -> Path:
     from default_classic_ml_models_kfolds import ClassicMLDefault  # noqa: WPS433
 
-    kdir = ctx.kfold_dir()
-    labels = ctx.labels_path()
+    kdir = ctx.kfold_dir(kfold_method)
+    labels = ctx.labels_path(kfold_method)
     if not kdir.is_dir():
         raise MethodExecutionError(f"K-fold directory not found: {kdir}")
 
     dumb = _dumb_columns_for_ml(ctx)
-    clf = ClassicMLDefault(random_state=42, model=model, n_jobs=-1)
+    clf = ClassicMLDefault(random_state=42, model=model, n_jobs=n_jobs)
     clf.train_tune_evaluate(str(kdir), str(labels), verbose=0, scaling=True, dumb_columns=dumb)
     clf.save_results(str(out), str(labels), str(kdir), save_model=False)
-    logger.info("Classic ML (%s) → %s", model, out)
+    logger.info("Classic ML (%s, %s) → %s", model, kfold_method, out)
     return out
 
 
-def _run_maps(ctx: DatasetContext, out: Path) -> Path:
+def _run_maps(ctx: DatasetContext, out: Path, kfold_method: str) -> Path:
     cmd = [
         sys.executable,
         str(_REPO / "src" / "methods" / "MAPS" / "run_maps.py"),
-        str(ctx.kfold_dir()),
+        str(ctx.kfold_dir(kfold_method)),
         str(out),
-        str(ctx.labels_path()),
+        str(ctx.labels_path(kfold_method)),
     ]
     _run_cmd(cmd)
     return out
 
 
-def _run_reference_mapping(ctx: DatasetContext, method_id: str, out: Path) -> Path:
+def _run_reference_mapping(
+    ctx: DatasetContext,
+    method_id: str,
+    out: Path,
+    kfold_method: str,
+) -> Path:
     from reference_mapping import (  # noqa: WPS433
         run_kfold_label_transfer,
         scarches_predict,
         singler_predict,
     )
 
-    kdir = ctx.kfold_dir()
-    labels = ctx.labels_path()
+    kdir = ctx.kfold_dir(kfold_method)
+    labels = ctx.labels_path(kfold_method)
     if not kdir.is_dir():
         raise MethodExecutionError(f"K-fold directory not found: {kdir}")
     if not labels.is_file():
@@ -166,7 +211,7 @@ def _run_reference_mapping(ctx: DatasetContext, method_id: str, out: Path) -> Pa
         predict_fn,
         dumb_columns=_dumb_columns_for_ml(ctx),
     )
-    logger.info("Reference mapping (%s) → %s", method_id, out)
+    logger.info("Reference mapping (%s, %s) → %s", method_id, kfold_method, out)
     return out
 
 
@@ -491,6 +536,7 @@ def execute_method(
     skip_missing_deps: bool = True,
     spatial_smooth: bool = False,
     spatial_k_neighbors: int = 15,
+    ml_n_jobs: int = -1,
 ) -> Optional[Path]:
     """Run one method and return its output directory (or None if skipped)."""
     if spec.requires_r and not _check_tool("Rscript"):
@@ -513,7 +559,7 @@ def execute_method(
     mem_before = _peak_memory_mb()
     try:
         if spec.category == MethodCategory.SUPERVISED_KFOLD:
-            result = run_supervised_kfold(ctx, spec)
+            result = run_supervised_kfold(ctx, spec, ml_n_jobs=ml_n_jobs)
         elif spec.category == MethodCategory.UNSUPERVISED_QUANT:
             result = run_unsupervised(ctx, spec, iterations=iterations)
         elif spec.category == MethodCategory.PRIOR_KNOWLEDGE:
@@ -526,12 +572,13 @@ def execute_method(
         elapsed = time.time() - start
         mem_after = _peak_memory_mb()
         peak = max(v for v in [mem_before, mem_after] if v is not None) if mem_before or mem_after else None
-        write_run_manifest(
-            result / "benchmark_manifest.json",
-            spec.id,
-            elapsed_sec=elapsed,
-            peak_memory_mb=peak,
-        )
+        if spec.category != MethodCategory.SUPERVISED_KFOLD:
+            write_run_manifest(
+                result / "benchmark_manifest.json",
+                spec.id,
+                elapsed_sec=elapsed,
+                peak_memory_mb=peak,
+            )
 
         if spatial_smooth and result is not None:
             n = postprocess_predictions_dir(

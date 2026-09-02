@@ -40,10 +40,32 @@ def _resolve_drop_columns(drop_columns, strip_labels: bool, phenotype_column: st
     return merged
 
 
-def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns, drop_non_numerical, n_splits, method, group_shuffle_split_size, swap_train_test, random_state, percentage_validation, strip_labels=False):
+def run_fold_creation(
+    main_dir,
+    dataset_name,
+    dropna,
+    impute_value,
+    phenotype_column,
+    batch_identifier_column,
+    drop_columns,
+    drop_non_numerical,
+    n_splits,
+    method,
+    group_shuffle_split_size,
+    swap_train_test,
+    random_state,
+    percentage_validation,
+    strip_labels=False,
+    rare_fraction=0.01,
+    common_fraction=0.05,
+    methods=None,
+):
     """
-    This function executes the DataSetHandler class to create cleaned kfolds and labels including translation csvs.
-    """    
+    Create k-fold splits. When *methods* is provided, preprocess the quant CSV once
+    and emit every listed split strategy in a single pass.
+    """
+    fold_methods = list(methods) if methods else [method]
+
     if impute_value is not None:
         impute_value = float(impute_value)
 
@@ -66,6 +88,46 @@ def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_co
     elif phenotype_column == 'level_1_cell_type':
         granularity_level = 'level1'
 
+    def _create_for_dataset(ds_name: str, save_dir: str, dataset_path: str) -> None:
+        data_handler = DataSetHandler(dataset_path, random_state=random_state)
+        data_handler.preprocess(
+            dropna,
+            impute_value,
+            phenotype_column,
+            batch_identifier_column,
+            drop_columns=drop_columns,
+            drop_non_numerical=drop_non_numerical,
+        )
+        representation_saved = False
+        for fold_method in fold_methods:
+            kfold_path = os.path.join(save_dir, f'kfolds_{fold_method}_{granularity_level}')
+            if os.path.isdir(kfold_path) and any(
+                name.startswith("fold_") and name.endswith("_train.csv")
+                for name in os.listdir(kfold_path)
+            ):
+                print(f"Skipping existing folds: {kfold_path}")
+                continue
+
+            print(f"Creating {fold_method} folds for {ds_name}")
+            data_handler.createFolds(
+                n_splits,
+                fold_method,
+                batch_identifier_column,
+                group_shuffle_split_size,
+                swap_train_test,
+                rare_fraction=rare_fraction,
+                common_fraction=common_fraction,
+            )
+            data_handler.save_labels(save_dir)
+            data_handler.save_folds(save_dir)
+            if not representation_saved:
+                data_handler.save_cell_type_representation(save_dir)
+                representation_saved = True
+            data_handler.create_validation_set_from_fold(
+                save_path=kfold_path,
+                percentage_validation=percentage_validation,
+            )
+
     # Loop through datasets
     if dataset_name is None:
         for dataset in os.listdir(os.path.join(main_dir, 'data', 'processed')):
@@ -77,23 +139,13 @@ def run_fold_creation(main_dir, dataset_name, dropna, impute_value, phenotype_co
             print(f"Processing dataset {dataset}")
             dataset_path = os.path.join(main_dir, 'data', 'processed', dataset, f'{dataset}_quantification.csv')
             save_dir = os.path.join(main_dir, 'data', 'processed', dataset)
-            data_handler = DataSetHandler(dataset_path, random_state=random_state)
-            data_handler.preprocess(dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns = drop_columns, drop_non_numerical = drop_non_numerical)
-            data_handler.createFolds(n_splits, method, batch_identifier_column, group_shuffle_split_size, swap_train_test)
-            data_handler.save_labels(save_dir)
-            data_handler.save_folds(save_dir)
-            data_handler.create_validation_set_from_fold(save_path=os.path.join(save_dir, f'kfolds_{method}_{granularity_level}'), percentage_validation=percentage_validation)
+            _create_for_dataset(dataset, save_dir, dataset_path)
     else:
         if os.path.isdir(os.path.join(main_dir, 'data', 'processed', dataset_name)):
             print(f"Processing {dataset_name}")
             dataset_path = os.path.join(main_dir, 'data', 'processed', dataset_name, f'{dataset_name}_quantification.csv')
             save_dir = os.path.join(main_dir, 'data', 'processed', dataset_name)
-            data_handler = DataSetHandler(dataset_path, random_state=random_state)
-            data_handler.preprocess(dropna, impute_value, phenotype_column, batch_identifier_column, drop_columns = drop_columns, drop_non_numerical = drop_non_numerical)
-            data_handler.createFolds(n_splits, method, batch_identifier_column, group_shuffle_split_size, swap_train_test)
-            data_handler.save_labels(save_dir)
-            data_handler.save_folds(save_dir)
-            data_handler.create_validation_set_from_fold(save_path=os.path.join(save_dir, f'kfolds_{method}_{granularity_level}'), percentage_validation=percentage_validation)
+            _create_for_dataset(dataset_name, save_dir, dataset_path)
         else:
             raise ValueError(f"{dataset_name} is not present among the datasets")
 def main():
@@ -158,11 +210,30 @@ def main():
         default = 5,
     )
     parser.add_argument(
+        '--methods',
+        nargs='+',
+        choices=['StratifiedKFold', 'ProgressiveKFold', 'StratifiedGroupKFold', 'GroupShuffleSplit'],
+        default=None,
+        help='Create multiple k-fold strategies in one preprocess pass.',
+    )
+    parser.add_argument(
         '--method',
         type = str,
         help = 'method to use for creating folds. Default is StratifiedKFold',
-        choices=['StratifiedKFold', 'StratifiedGroupKFold', 'GroupShuffleSplit'],
+        choices=['StratifiedKFold', 'ProgressiveKFold', 'StratifiedGroupKFold', 'GroupShuffleSplit'],
         default = 'StratifiedKFold',
+    )
+    parser.add_argument(
+        '--rare_fraction',
+        type=float,
+        default=0.01,
+        help='Fraction threshold below which a cell type is labelled rare (default: 0.01).',
+    )
+    parser.add_argument(
+        '--common_fraction',
+        type=float,
+        default=0.05,
+        help='Fraction threshold at or above which a cell type is labelled common (default: 0.05).',
     )
     parser.add_argument(
         '--group_shuffle_split_size',
@@ -198,11 +269,13 @@ def main():
     )
 
     args = parser.parse_args()
-    run_fold_creation(args.main_dir, args.dataset_name, args.dropna, args.impute_value, args.phenotype_column,
-                        args.batch_identifier_column, args.drop_columns, args.drop_non_numerical, args.n_splits,
-                        args.method, args.group_shuffle_split_size, args.swap_train_test, args.random_state,
-                        args.percentage_validation, args.strip_labels
-                        )
+    run_fold_creation(
+        args.main_dir, args.dataset_name, args.dropna, args.impute_value, args.phenotype_column,
+        args.batch_identifier_column, args.drop_columns, args.drop_non_numerical, args.n_splits,
+        args.method, args.group_shuffle_split_size, args.swap_train_test, args.random_state,
+        args.percentage_validation, args.strip_labels, args.rare_fraction, args.common_fraction,
+        methods=args.methods,
+    )
     print("Done.")
 if __name__ == '__main__':
     main()

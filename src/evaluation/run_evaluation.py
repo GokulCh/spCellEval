@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rank methods by unsupervised metrics only (no ground-truth accuracy).",
     )
+    p.add_argument(
+        "--parallel_jobs",
+        type=int,
+        default=None,
+        help="Parallel workers for per-file evaluation (0=auto, 1=sequential).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
         "--log_dir",
@@ -104,12 +110,23 @@ def _run_evaluation_cli(args: argparse.Namespace) -> None:
     results_root = args.results_dir.resolve()
     methods = args.methods
 
+    eval_defaults = {}
     if args.config and args.config.is_file():
         with args.config.open("r", encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
+        eval_defaults = cfg.get("defaults", {})
         ds_cfg = cfg.get("datasets", {}).get(args.dataset, {})
         if not methods and "methods" in ds_cfg:
             methods = ds_cfg["methods"]
+
+    rare_fraction = float(eval_defaults.get("rare_fraction", 0.01))
+    common_fraction = float(eval_defaults.get("common_fraction", 0.05))
+    export_representation = bool(eval_defaults.get("export_cell_type_representation", True))
+    export_per_class = bool(eval_defaults.get("export_per_class_metrics", True))
+
+    parallel_jobs = int(eval_defaults.get("parallel_jobs", 0))
+    if args.parallel_jobs is not None:
+        parallel_jobs = args.parallel_jobs
 
     logger.info("Evaluating dataset: %s", args.dataset)
     quant_path, marker_cols = resolve_dataset_quant(args.dataset, _REPO)
@@ -125,6 +142,9 @@ def _run_evaluation_cli(args: argparse.Namespace) -> None:
         quant_path=quant_path,
         marker_cols=marker_cols or None,
         marker_rules=purity_rules,
+        rare_fraction=rare_fraction,
+        common_fraction=common_fraction,
+        parallel_jobs=parallel_jobs,
     )
 
     if per_fold.empty:
@@ -140,6 +160,40 @@ def _run_evaluation_cli(args: argparse.Namespace) -> None:
     summary_path = out_dir / "final_results.csv"
     per_fold.to_csv(per_fold_path, index=False)
     summary.to_csv(summary_path, index=False)
+
+    tables_dir = out_dir / "tables"
+    from reporting import (  # noqa: WPS433
+        export_all_report_tables,
+        export_cell_type_representation_table,
+        export_per_class_metrics_tables,
+        export_rare_type_benchmark_summary,
+    )
+
+    export_all_report_tables(
+        args.dataset,
+        results_root,
+        summary=summary,
+        quant_path=quant_path,
+        marker_cols=marker_cols or None,
+    )
+    if export_representation and quant_path:
+        export_cell_type_representation_table(
+            quant_path,
+            tables_dir,
+            rare_fraction=rare_fraction,
+            common_fraction=common_fraction,
+        )
+    if export_per_class:
+        export_per_class_metrics_tables(
+            results_root / args.dataset,
+            tables_dir,
+            methods=methods,
+            quant_path=quant_path,
+            marker_cols=marker_cols or None,
+            rare_fraction=rare_fraction,
+            common_fraction=common_fraction,
+        )
+    export_rare_type_benchmark_summary(per_fold, tables_dir)
 
     print("\n" + "=" * 60)
     print(f"Evaluation complete for {args.dataset}")
@@ -162,8 +216,9 @@ def _run_evaluation_cli(args: argparse.Namespace) -> None:
             l3 = summary[summary["level"] == "level3"].sort_values(
                 "overall_score", ascending=False, na_position="last"
             )
-            cols = ["method", "accuracy_mean", "macro_f1_mean", "silhouette_mean",
-                    "marker_purity_mean", "neighborhood_consistency_mean", "overall_score"]
+            cols = ["method", "kfold_strategy", "accuracy_mean", "macro_f1_mean", "rare_macro_f1_mean",
+                    "silhouette_mean", "marker_purity_mean", "neighborhood_consistency_mean",
+                    "overall_score"]
         cols = [c for c in cols if c in l3.columns]
         print(l3[cols].head(10).to_string(index=False))
 

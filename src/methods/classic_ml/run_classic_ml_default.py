@@ -93,7 +93,7 @@ def main():
     parser.add_argument(
         "--kfold_method",
         type=str,
-        choices=['StratifiedGroupKFold', 'StratifiedKFold', 'GroupShuffleSplit'],
+        choices=['StratifiedGroupKFold', 'StratifiedKFold', 'ProgressiveKFold', 'GroupShuffleSplit'],
         default='StratifiedGroupKFold',
         help="Which fold creation method was used. Default is StratifiedGroupKFold."
         )

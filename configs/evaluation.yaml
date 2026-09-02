@@ -5,6 +5,11 @@ defaults:
   levels: [level1, level2, level3]
   hierarchy: src/evaluation/cell_type_hierarchy.txt
   always_compute_unsupervised: true
+  rare_fraction: 0.01
+  common_fraction: 0.05
+  export_cell_type_representation: true
+  export_per_class_metrics: true
+  parallel_jobs: 0
 
 datasets:
   IMMUcan:
