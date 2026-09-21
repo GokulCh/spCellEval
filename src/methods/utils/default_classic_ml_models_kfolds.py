@@ -12,7 +12,7 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier as rfc
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
 try:
     from xgboost import XGBClassifier
 except ImportError:  # xgboost not installed — the other classic models still work
@@ -65,10 +65,9 @@ class ClassicMLDefault:
             kwargs.pop("n_jobs", None)
             if "class_weight" not in kwargs:
                 kwargs["class_weight"] = "balanced"
-            self.model = SVC(
-                probability=True,
-                decision_function_shape="ovr",
-                max_iter=-1,
+            self.model = LinearSVC(
+                multi_class="ovr",
+                max_iter=5000,
                 random_state=random_state,
                 **kwargs,
             )
@@ -201,10 +200,9 @@ class ClassicMLDefault:
                 )
             elif self.model_name == "svm":
                 svm_kwargs = {k: v for k, v in self.kwargs.items() if k != "n_jobs"}
-                self.model = SVC(
-                    probability=True,
-                    decision_function_shape="ovr",
-                    max_iter=-1,
+                self.model = LinearSVC(
+                    multi_class="ovr",
+                    max_iter=5000,
                     random_state=self.random_state,
                     **svm_kwargs,
                 )

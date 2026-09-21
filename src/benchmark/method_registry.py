@@ -110,7 +110,7 @@ _register(MethodSpec(
     id="svm",
     display_name="SVM",
     category=MethodCategory.SUPERVISED_KFOLD,
-    description="sklearn Support Vector Machine (RBF, class-balanced) on k-fold splits.",
+    description="sklearn LinearSVM (linear, class-balanced) on k-fold splits.",
     script=_p("classic_ml", "run_classic_ml_default.py"),
     tabular_default=True,
 ))
