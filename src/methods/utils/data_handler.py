@@ -1,9 +1,10 @@
 import os
 import json
+import sys
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold, train_test_split, GroupShuffleSplit, ShuffleSplit
-from sklearn.preprocessing import LabelEncoder
 from typing import List, Optional
 
 from kfold_strategies import (
@@ -11,6 +12,16 @@ from kfold_strategies import (
     build_cell_type_representation,
     fold_representation_table,
     progressive_kfold_splits,
+    stratified_80_20_split,
+)
+
+# Shared label-encoding + non-spatial masking helpers (Stage 2 ground-truth mgmt).
+_PSEUDO_DIR = Path(__file__).resolve().parents[2] / "pseudo_labeling"
+if str(_PSEUDO_DIR) not in sys.path:
+    sys.path.insert(0, str(_PSEUDO_DIR))
+from ground_truth import (  # noqa: E402
+    SPATIAL_COLUMNS,
+    encode_phenotype_labels,
 )
 
 class DataSetHandler:
@@ -21,19 +32,29 @@ class DataSetHandler:
         self.X = None
         self.Y = None
         self.labels = None
+        self.label_encoder = None
+        self.spatial = None
         self.method = None
         self.granularity_level = None
         self.batch_identifier = None
         self.kfolds = None
         self.fold_indices = None
         self.fold_data = None
+        self.split_indices = None
+        self.split_data = None
         print("DataSetHandler initialized successfully")
     
     
-    def preprocess(self, dropna: bool, impute_value: float = None, phenotype_column: str = 'cell_type', batch_identifier_column: str = None, drop_columns: List[str] = None, drop_non_numerical: bool = False) -> None:
+    def preprocess(self, dropna: bool, impute_value: float = None, phenotype_column: str = 'cell_type', batch_identifier_column: str = None, drop_columns: List[str] = None, drop_non_numerical: bool = False, enforce_non_spatial: bool = True) -> None:
         """
         This function processes the laoded dataframe. If NA values are present, they can be dropped or imputed with a specified value. A group identifier can be
-        specified so which will be kept even if non-numerical columns are dropped. The phenotype column is encoded and the data is split into X and Y. 
+        specified so which will be kept even if non-numerical columns are dropped. The phenotype column is encoded and the data is split into X and Y.
+
+        Non-spatial masking (Objective: preprocessing): when ``enforce_non_spatial``
+        is True (default), spatial (X, Y) coordinates are ALWAYS excluded from the
+        feature matrix ``self.X`` and stored separately in ``self.spatial`` for
+        downstream spatial diagnostics. Models therefore only ever see protein
+        expression matrices during training and prediction.
         """
         if phenotype_column == 'cell_type':
             self.granularity_level = 'level3'
@@ -58,13 +79,11 @@ class DataSetHandler:
             if drop_columns:
                 self.data.drop(columns=drop_columns, inplace=True)
 
-        label_encoder = LabelEncoder()
-        self.Y = label_encoder.fit_transform(self.data[phenotype_column])
-        self.labels = pd.DataFrame({
-            'label': range(len(label_encoder.classes_)),
-            'phenotype': label_encoder.classes_
-            })
-        
+        # Consistent label encoding shared by ALL benchmark methods.
+        self.Y, self.labels, self.label_encoder = encode_phenotype_labels(
+            self.data, phenotype_column=phenotype_column
+        )
+
         # If group identifier is selected but is a non-numerical and user selects to drop non-numericals, it is stored in a separate variable and re-inserted to preserve it
         if drop_non_numerical:
             if batch_identifier_column is not None and self.data[batch_identifier_column].select_dtypes(include=[np.number]).empty:
@@ -75,6 +94,16 @@ class DataSetHandler:
                 self.X  = self.data.select_dtypes(include=[np.number])
         else:
             self.X = self.data.drop(columns=[phenotype_column])
+
+        # Strict non-spatial masking: (x, y) coords must never enter model inputs.
+        if enforce_non_spatial:
+            spatial = [c for c in SPATIAL_COLUMNS if c in self.X.columns]
+            if spatial:
+                self.spatial = self.X[spatial].copy()
+                self.X = self.X.drop(columns=spatial)
+                print(f"Non-spatial masking: removed spatial columns {spatial} from X")
+            else:
+                self.spatial = pd.DataFrame(index=self.data.index)
 
         print("Data successfully preprocessed")
     
@@ -164,6 +193,79 @@ class DataSetHandler:
             self.fold_data.append(fold)
         
         print(f"{k} folds created. To save the folds, call save_folds method.")
+
+    def create_stratified_split(
+        self,
+        test_size: float = 0.2,
+        random_state: int = None,
+        *,
+        swap_train_test: bool = False,
+    ) -> None:
+        """Objective 1 — baseline stratified 80/20 train/test split.
+
+        Uses the STRICTLY NON-SPATIAL ``self.X`` built in ``preprocess`` and the
+        shared encoded labels ``self.Y``. Stores ``self.split_indices`` and a
+        ``self.split_data`` dict with ``X_train/X_test/Y_train/Y_test`` so every
+        method wrapper shares an identical split + label mapping.
+        """
+        if self.X is None or self.Y is None:
+            raise ValueError("Call preprocess() before create_stratified_split().")
+        if self.labels is None:
+            raise ValueError("Call preprocess() before create_stratified_split().")
+
+        rs = self.random_state if random_state is None else random_state
+        train_idx, test_idx = stratified_80_20_split(
+            self.Y, random_state=rs, test_size=test_size
+        )
+        if swap_train_test:
+            print("Swapping train and test sets in split")
+            train_idx, test_idx = test_idx, train_idx
+
+        self.split_indices = (train_idx, test_idx)
+        self.split_data = {
+            'X_train': self.X.iloc[train_idx].reset_index(drop=True),
+            'X_test': self.X.iloc[test_idx].reset_index(drop=True),
+            'Y_train': self.Y[train_idx],
+            'Y_test': self.Y[test_idx],
+            'train_index': np.asarray(train_idx, dtype=int),
+            'test_index': np.asarray(test_idx, dtype=int),
+        }
+        print(
+            f"Stratified {int((1 - test_size) * 100)}/{int(test_size * 100)} split created: "
+            f"{len(train_idx)} train / {len(test_idx)} test cells."
+        )
+
+    def save_stratified_split(self, save_path: str = None) -> None:
+        """Persist the 80/20 split in the same layout as the k-fold directories."""
+        if self.split_indices is None:
+            raise ValueError("No split has been created. Call create_stratified_split first.")
+
+        if save_path is None:
+            save_path = os.getcwd()
+
+        kfolds_dir = os.path.join(
+            save_path, f"kfolds_StratifiedKFold_{self.granularity_level}"
+        )
+        os.makedirs(kfolds_dir, exist_ok=True)
+
+        train_idx, test_idx = self.split_indices
+        fold_meta = [
+            {'fold': 1, 'train': train_idx.tolist(), 'test': test_idx.tolist(),
+             'split': '80_20'},
+        ]
+        with open(os.path.join(kfolds_dir, 'split_80_20.json'), 'w') as f:
+            json.dump({'random_state': self.random_state, 'splits': fold_meta}, f)
+
+        X_train, X_test = self.split_data['X_train'], self.split_data['X_test']
+        Y_train, Y_test = self.split_data['Y_train'], self.split_data['Y_test']
+        for name, X, Y in (("train", X_train, Y_train), ("test", X_test, Y_test)):
+            df = pd.concat(
+                [X.reset_index(drop=True),
+                 pd.Series(Y, name='encoded_phenotype').reset_index(drop=True)],
+                axis=1,
+            )
+            df.to_csv(os.path.join(kfolds_dir, f'split_80_20_{name}.csv'), index=False)
+        print(f"80/20 split saved in: {kfolds_dir}")
 
     def save_cell_type_representation(
         self,

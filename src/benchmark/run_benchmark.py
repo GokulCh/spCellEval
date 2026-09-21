@@ -102,6 +102,12 @@ def run_benchmark(
     kfold_method: Optional[str] = None,
     kfold_methods: Optional[List[str]] = None,
     parallel_jobs: Optional[int] = None,
+    *,
+    baseline_split: bool = False,
+    cross_validation: bool = False,
+    subsample_experiment: bool = False,
+    fractions: str = "0.01,0.05,0.10,0.20,0.40,0.60,0.80",
+    holdout: float = 0.20,
 ) -> dict:
     bench_cfg = _load_benchmark_config(bench_config_path)
     ds_entry = _resolve_dataset_entry(bench_cfg, dataset_name)
@@ -149,11 +155,38 @@ def run_benchmark(
         if ensure_kfolds or recreate_kfolds:
             ctx.ensure_kfolds(strip_labels=defaults.get("strip_labels", True))
 
+    results = {"succeeded": [], "skipped": [], "failed": []}
+
+    # ── Objective experiments (share the same DatasetContext / split config) ──
+    # Run before the method loop so the experiments are executed in BOTH the
+    # sequential and the parallel branch (the sequential branch returns early).
+    if baseline_split or cross_validation or subsample_experiment:
+        from experiments import run_baseline_split as _run_baseline  # noqa: WPS433
+        from experiments import run_five_fold_cv as _run_fivefold  # noqa: WPS433
+        from experiments import run_subsampling_experiment as _run_subsample  # noqa: WPS433
+        from experiments import SUPERVISED_METHODS  # noqa: WPS433
+
+        exp_root = root / "experiments" / dataset_name
+        exp_methods = [m for m in methods if m in SUPERVISED_METHODS]
+
+        if baseline_split and exp_methods:
+            logger.info("Objective 1 — baseline 80/20 split experiment")
+            _run_baseline(ctx, exp_methods, exp_root, test_size=holdout)
+        if cross_validation and exp_methods:
+            logger.info("Objective 3 — 5-fold cross-validation summary")
+            _run_fivefold(ctx, exp_methods, exp_root)
+        if subsample_experiment and exp_methods:
+            logger.info("Objective 4 — subsampling efficiency sweep")
+            fraction_values = [float(x.strip()) for x in fractions.split(",")]
+            _run_subsample(
+                ctx, exp_methods, exp_root, fractions=fraction_values, holdout=holdout
+            )
+        results.setdefault("experiments_dir", str(exp_root))
+
     workers = resolve_worker_count(
         parallel_jobs if parallel_jobs is not None else defaults.get("parallel_jobs", 0)
     )
     ml_n_jobs = resolve_ml_n_jobs(workers)
-    results = {"succeeded": [], "skipped": [], "failed": []}
 
     known_methods = [m for m in methods if m in METHOD_REGISTRY]
     unknown = [m for m in methods if m not in METHOD_REGISTRY]
@@ -200,6 +233,11 @@ def run_benchmark(
             except MethodExecutionError as exc:
                 logger.error("FAIL %s: %s", method_id, exc)
                 results["failed"].append((method_id, str(exc)))
+                if fail_fast:
+                    break
+            except Exception as exc:  # isolate one method's crash from the suite
+                logger.error("FAIL %s (unexpected): %s", method_id, exc)
+                results["failed"].append((method_id, f"{type(exc).__name__}: {exc}"))
                 if fail_fast:
                     break
         return results
@@ -332,6 +370,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Number of benchmark methods to run in parallel (0=auto, 1=sequential).",
     )
+    p.add_argument(
+        "--baseline_split",
+        action="store_true",
+        help="Objective 1 — run the baseline 80/20 train/test split experiment.",
+    )
+    p.add_argument(
+        "--cross_validation",
+        action="store_true",
+        help="Objective 3 — run the 5-fold cross-validation summary.",
+    )
+    p.add_argument(
+        "--subsample_experiment",
+        action="store_true",
+        help="Objective 4 — run the training-size efficiency (subsampling) sweep.",
+    )
+    p.add_argument(
+        "--fractions",
+        type=str,
+        default="0.01,0.05,0.10,0.20,0.40,0.60,0.80",
+        help="Comma-separated train fractions for --subsample_experiment.",
+    )
+    p.add_argument(
+        "--holdout",
+        type=float,
+        default=0.20,
+        help="Fixed test fraction for --baseline_split / --subsample_experiment.",
+    )
     p.add_argument("--list_methods", action="store_true", help="Print method catalog and exit.")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument(
@@ -395,6 +460,11 @@ def _run_benchmark_cli(args: argparse.Namespace) -> None:
         unlabeled=args.unlabeled,
         kfold_method=args.kfold_method,
         parallel_jobs=args.parallel_jobs,
+        baseline_split=args.baseline_split,
+        cross_validation=args.cross_validation,
+        subsample_experiment=args.subsample_experiment,
+        fractions=args.fractions,
+        holdout=args.holdout,
     )
 
     print("\n" + "=" * 60)
@@ -411,6 +481,9 @@ def _run_benchmark_cli(args: argparse.Namespace) -> None:
         for mid, err in summary["failed"]:
             print(f"    FAIL {mid}: {err}")
         sys.exit(1)
+
+    if summary.get("experiments_dir"):
+        print(f"\nExperiment outputs written to: {summary['experiments_dir']}")
 
 
 def main() -> None:

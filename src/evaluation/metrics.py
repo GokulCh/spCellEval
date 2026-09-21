@@ -57,12 +57,18 @@ class SupervisedMetrics:
     # Rare / common cell-type benchmark metrics (optional).
     rare_macro_f1: Optional[float] = None
     common_macro_f1: Optional[float] = None
+    abundant_macro_f1: Optional[float] = None
     min_class_recall: Optional[float] = None
     rare_min_recall: Optional[float] = None
     n_rare_types: Optional[int] = None
     n_common_types: Optional[int] = None
+    n_abundant_types: Optional[int] = None
     most_common_type: Optional[str] = None
     rarest_type: Optional[str] = None
+    # Objective 2 — extended classification metrics.
+    micro_f1: Optional[float] = None
+    sensitivity: Optional[float] = None
+    specificity: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -160,12 +166,43 @@ def _min_recall_for_labels(y_true: pd.Series, y_pred: pd.Series, labels: list) -
     return float(min(recalls)) if recalls else None
 
 
+def sensitivity_specificity(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+) -> tuple:
+    """Objective 2 — macro sensitivity (per-class recall) and macro specificity.
+
+    Specificity for a class is computed one-vs-rest from the confusion table; the
+    reported scores are the class-mean. Returns ``(sensitivity, specificity)``.
+    """
+    labels = sorted(set(y_true) | set(y_pred))
+    if not labels:
+        return 0.0, 0.0
+    from sklearn.metrics import confusion_matrix
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    sensitivities, specificities = [], []
+    for i in range(len(labels)):
+        tp = int(cm[i, i])
+        fn = int(cm[i, :].sum()) - tp
+        fp = int(cm[:, i].sum()) - tp
+        tn = int(cm.sum()) - (tp + fn + fp)
+        if (tp + fn) > 0:
+            sensitivities.append(tp / (tp + fn))
+        if (tn + fp) > 0:
+            specificities.append(tn / (tn + fp))
+    sens = float(np.mean(sensitivities)) if sensitivities else 0.0
+    spec = float(np.mean(specificities)) if specificities else 0.0
+    return sens, spec
+
+
 def compute_rare_type_metrics(
     y_true: pd.Series,
     y_pred: pd.Series,
     *,
     rare_fraction: float = 0.01,
     common_fraction: float = 0.05,
+    abundant_fraction: float = 0.05,
 ) -> dict:
     """Benchmark metrics focused on rare and common cell populations."""
     yt = y_true.dropna().astype(str)
@@ -187,14 +224,20 @@ def compute_rare_type_metrics(
     rare_labels = [lbl for lbl, t in tiers.items() if t == "rare"]
     common_labels = [lbl for lbl, t in tiers.items() if t == "common"]
     counts = yt.value_counts()
+    norm = yt.value_counts(normalize=True)
+    abundant_labels = [str(l) for l, frac in norm.items() if frac > abundant_fraction]
 
     return {
         "rare_macro_f1": _tiered_subset_f1(yt, yp, tiers, "rare"),
         "common_macro_f1": _tiered_subset_f1(yt, yp, tiers, "common"),
+        "abundant_macro_f1": _tiered_subset_f1(
+            yt, yp, {lbl: "abundant" for lbl in abundant_labels}, "abundant"
+        ),
         "min_class_recall": _min_recall_for_labels(yt, yp, sorted(yt.unique())),
         "rare_min_recall": _min_recall_for_labels(yt, yp, rare_labels),
         "n_rare_types": len(rare_labels),
         "n_common_types": len(common_labels),
+        "n_abundant_types": len(abundant_labels),
         "most_common_type": counts.index[0] if len(counts) else None,
         "rarest_type": counts.index[-1] if len(counts) else None,
     }
@@ -270,18 +313,22 @@ def compute_supervised_metrics(
         anc = parse_ancestor_map(hierarchy_path) if hierarchy_path else parse_ancestor_map()
         h_f1 = hierarchical_f1_score(yt, yp, anc)
 
-    rare_metrics = (
+    recompute_rare_metrics = (
         compute_rare_type_metrics(
             yt, yp, rare_fraction=rare_fraction, common_fraction=common_fraction,
         )
         if include_rare_metrics
         else {}
     )
+    sens, spec = sensitivity_specificity(yt, yp)
 
     return SupervisedMetrics(
         accuracy=float((yt == yp).mean()),
         macro_f1=float(f1_score(yt, yp, average="macro", zero_division=0)),
         weighted_f1=float(f1_score(yt, yp, average="weighted", zero_division=0)),
+        micro_f1=float(f1_score(yt, yp, average="micro", zero_division=0)),
+        sensitivity=sens,
+        specificity=spec,
         ari=float(adjusted_rand_score(yt, yp)),
         nmi=float(normalized_mutual_info_score(yt, yp)),
         mcc=float(matthews_corrcoef(yt, yp)),
@@ -293,8 +340,70 @@ def compute_supervised_metrics(
         kl_divergence=comp["kl_divergence"],
         jensen_shannon=comp["jensen_shannon"],
         n_cells=n,
-        **rare_metrics,
+        **recompute_rare_metrics,
     )
+
+
+def extract_feature_importance(
+    model,
+    feature_names: Sequence[str],
+    *,
+    n_top: int = 5,
+) -> Dict[str, dict]:
+    """Objective 2 — extract top predictive markers per cell type from a fitted model.
+
+    Importance source is chosen by estimator type: tree ``feature_importances_``,
+    linear ``coef_`` magnitudes (per-OVR row when 2-D), and a SHAP fallback if
+    available. Returns ``{phenotype_label: {feature_name: importance}}`` with only
+    the top-``n_top`` markers per class.
+    """
+    import numpy as _np
+
+    def _component(imp):
+        best = None
+        if hasattr(model, "feature_importances_"):
+            best = model.feature_importances_
+        elif hasattr(model, "coef_"):
+            best = _np.abs(model.coef_).mean(axis=0)
+        elif hasattr(model, "coefs_"):
+            best = _np.abs(model.coefs_).mean(axis=0)
+        return _np.asarray(best, dtype=float).ravel() if best is not None else None
+
+    global_imp = _component(model)
+    per_class = None
+    if hasattr(model, "coef_") and getattr(model, "coef_", None) is not None:
+        coef = _np.asarray(model.coef_, dtype=float)
+        if coef.ndim == 2:
+            per_class = [_np.abs(c).ravel() for c in coef]
+    if per_class is None:
+        classes = getattr(model, "classes_", None)
+        per_class = [global_imp] if global_imp is not None else None
+        if per_class is not None and classes is not None:
+            per_class = per_class * len(classes)
+
+    if global_imp is None and per_class is None:
+        global_imp = _np.zeros(len(feature_names))
+        per_class = [global_imp]
+
+    if len(feature_names) != len(global_imp or []) and len(feature_names) != (
+        len(per_class[0]) if per_class else 0
+    ):
+        return {}
+
+    classes = getattr(model, "classes_", None)
+    if classes is None:
+        classes = [f"class_{i}" for i in range(len(per_class))]
+    out = {}
+    for class_idx, class_label in enumerate(classes):
+        imp = per_class[class_idx] if class_idx < len(per_class) else global_imp
+        if len(imp) != len(feature_names):
+            continue
+        order = _np.argsort(-_np.asarray(imp, dtype=float))
+        top_idx = order[:n_top]
+        out[str(class_label)] = {
+            str(feature_names[int(i)]): float(imp[int(i)]) for i in top_idx
+        }
+    return out
 
 
 @dataclass

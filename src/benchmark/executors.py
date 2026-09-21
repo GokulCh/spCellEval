@@ -62,13 +62,15 @@ def _check_tool(name: str) -> bool:
 
 
 def _image_dataset_slug(ctx: DatasetContext) -> str:
-    """Return the dataset slug expected by image-method scripts (IMMUcan only)."""
+    """Return the dataset slug expected by image-method scripts."""
     if "immucan" in ctx.dataset_name.lower():
         return "immucan"
+    if "crc" in ctx.dataset_name.lower():
+        return "crc_tma"
     raise MethodExecutionError(
         f"{ctx.dataset_name} is not configured for image-based methods "
-        f"({ctx.dataset_name} ≠ IMMUcan). Remove cellsighter, stellar, virtues_*, "
-        f"eva_*, or kronos_* from benchmark.yaml for this dataset."
+        f"({ctx.dataset_name} ≠ IMMUcan/CRC_TMA). Remove those methods from "
+        f"benchmark.yaml for this dataset."
     )
 
 
@@ -143,13 +145,13 @@ def _run_supervised_kfold_strategy(
     out = ctx.results_dir(spec.id, kfold_method)
     out.mkdir(parents=True, exist_ok=True)
 
-    if spec.id in ("random_forest", "logistic_regression", "xgboost"):
+    if spec.id in ("random_forest", "logistic_regression", "xgboost", "svm"):
         return _run_classic_ml(ctx, spec.id, out, kfold_method, n_jobs=ml_n_jobs)
 
     if spec.id == "maps":
         return _run_maps(ctx, out, kfold_method)
 
-    if spec.id in ("singler", "scarches"):
+    if spec.id in ("singler", "scarches", "ribca_adapted"):
         return _run_reference_mapping(ctx, spec.id, out, kfold_method)
 
     raise MethodExecutionError(f"No supervised executor for '{spec.id}'")
@@ -167,6 +169,10 @@ def _run_classic_ml(ctx: DatasetContext, model: str, out: Path, kfold_method: st
     clf = ClassicMLDefault(random_state=42, model=model, n_jobs=n_jobs)
     clf.train_tune_evaluate(str(kdir), str(labels), verbose=0, scaling=True, dumb_columns=dumb)
     clf.save_results(str(out), str(labels), str(kdir), save_model=False)
+    try:
+        clf.save_feature_importances(str(out), str(labels), str(kdir))
+    except Exception as exc:  # feature export must never block the run
+        logger.warning("Feature importance export skipped: %s", exc)
     logger.info("Classic ML (%s, %s) → %s", model, kfold_method, out)
     return out
 
@@ -190,6 +196,7 @@ def _run_reference_mapping(
     kfold_method: str,
 ) -> Path:
     from reference_mapping import (  # noqa: WPS433
+        ribca_predict,
         run_kfold_label_transfer,
         scarches_predict,
         singler_predict,
@@ -202,7 +209,10 @@ def _run_reference_mapping(
     if not labels.is_file():
         raise MethodExecutionError(f"Labels file not found: {labels}")
 
-    predict_fn = singler_predict if method_id == "singler" else scarches_predict
+    if method_id == "ribca_adapted":
+        predict_fn = ribca_predict
+    else:
+        predict_fn = singler_predict if method_id == "singler" else scarches_predict
     run_kfold_label_transfer(
         kdir,
         labels,

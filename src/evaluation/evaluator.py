@@ -54,11 +54,12 @@ def _resolve_kfold_strategy(method: str) -> Optional[str]:
 logger = logging.getLogger(__name__)
 
 SUPERVISED_METRIC_COLS = [
-    "accuracy", "macro_f1", "weighted_f1", "ari", "nmi", "mcc", "kappa",
+    "accuracy", "macro_f1", "weighted_f1", "micro_f1", "sensitivity", "specificity",
+    "ari", "nmi", "mcc", "kappa",
     "hierarchical_f1", "g_mean", "r2_composition", "pearson_composition",
     "kl_divergence", "jensen_shannon",
-    "rare_macro_f1", "common_macro_f1", "min_class_recall", "rare_min_recall",
-    "n_rare_types", "n_common_types",
+    "rare_macro_f1", "common_macro_f1", "abundant_macro_f1", "min_class_recall",
+    "rare_min_recall", "n_rare_types", "n_common_types", "n_abundant_types",
 ]
 UNSUPERVISED_METRIC_COLS = [
     "silhouette", "davies_bouldin", "spatial_entropy", "marker_consistency",

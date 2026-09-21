@@ -107,6 +107,22 @@ _register(MethodSpec(
     tabular_default=True,
 ))
 _register(MethodSpec(
+    id="svm",
+    display_name="SVM",
+    category=MethodCategory.SUPERVISED_KFOLD,
+    description="sklearn Support Vector Machine (RBF, class-balanced) on k-fold splits.",
+    script=_p("classic_ml", "run_classic_ml_default.py"),
+    tabular_default=True,
+))
+_register(MethodSpec(
+    id="ribca_adapted",
+    display_name="RIBCA (adapted)",
+    category=MethodCategory.SUPERVISED_KFOLD,
+    description="Reference-informed cell annotation: mean profiles + correlation + Hungarian assignment.",
+    script=None,
+    tabular_default=True,
+))
+_register(MethodSpec(
     id="maps",
     display_name="MAPS",
     category=MethodCategory.SUPERVISED_KFOLD,

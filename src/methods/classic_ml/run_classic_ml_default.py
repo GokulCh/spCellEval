@@ -52,6 +52,7 @@ def run_on_datasets(main_dir, dataset_path, model, kfold_method, granularity_lev
             data_object = ClassicMLDefault(random_state=random_state, model = model, n_jobs = n_jobs_model, **model_kwargs_dict)
             data_object.train_tune_evaluate(kfold_dir, label_dir, verbose, scaling, dumb_columns)
             data_object.save_results(save_dir, label_dir, kfold_dir)
+            data_object.save_feature_importances(save_dir, label_dir, kfold_dir)
     else:
         print(f"Processing dataset {dataset_path}")
 
@@ -64,6 +65,7 @@ def run_on_datasets(main_dir, dataset_path, model, kfold_method, granularity_lev
         data_object = ClassicMLDefault(random_state=random_state, model = model, n_jobs = n_jobs_model, **model_kwargs_dict)
         data_object.train_tune_evaluate(kfold_dir, label_dir, verbose, scaling, dumb_columns)
         data_object.save_results(output_path, label_dir, kfold_dir, save_model=False)
+        data_object.save_feature_importances(output_path, label_dir, kfold_dir)
 
 
 
@@ -87,8 +89,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        choices=['logistic_regression', 'random_forest', 'xgboost','most_frequent','stratified'],
-        help="Select a model to run, either 'logistic_regression', 'random_forest', 'xgboost', 'most_frequent', or 'stratified'.", required=True
+        choices=['logistic_regression', 'random_forest', 'xgboost', 'svm', 'most_frequent', 'stratified'],
+        help="Select a model to run, either 'logistic_regression', 'random_forest', 'xgboost', 'svm', 'most_frequent', or 'stratified'.", required=True
         )
     parser.add_argument(
         "--kfold_method",

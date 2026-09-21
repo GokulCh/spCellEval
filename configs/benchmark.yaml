@@ -70,20 +70,20 @@ datasets:
       decision_matrix_scyan: configs/artifacts/CRC_TMA/scyan_decision_matrix_level3.csv
       decision_matrix_tacit: configs/artifacts/CRC_TMA/tacit_decision_matrix_level3.csv
       decision_matrix_astir: src/methods/astir/cell_types_CRC_TMA.yml
+    # The 15-method benchmark suite for CRC_TMA.
     methods:
-      - random_forest
+      - stellar
+      - tacit
       - xgboost
-      - logistic_regression
-      - singler
-      - scarches
+      - random_forest
+      - svm
       - leiden
       - louvain
-      - spade
       - flowsom
-      - phenograph
-      - signature
-      - scyan
-      - tacit
       - astir
+      - scyan
+      - nimbus
+      - ribca_adapted
+      - deepcelltypes
+      - starling
       - cellsighter
-      - stellar

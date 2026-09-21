@@ -38,6 +38,11 @@ STANDARD_METADATA_COLUMNS: List[str] = [
     "batch_id",
 ]
 
+# Spatial (X, Y) coordinate columns must NEVER enter model feature matrices.
+# During training AND prediction we pass only protein expression matrices;
+# spatial coordinates are stripped from X in every wrapper.
+SPATIAL_COLUMNS: List[str] = ["x", "y", "Pos_X", "Pos_Y", "X", "Y"]
+
 # Columns commonly dropped by supervised method runners (MAPS, etc.).
 DEFAULT_EVAL_DROP_COLUMNS: List[str] = [
     *STANDARD_METADATA_COLUMNS,
@@ -119,6 +124,105 @@ def strip_ground_truth(
     to_drop = _unique_preserve_order([c for c in to_drop if c in df.columns])
     features = df.drop(columns=to_drop).copy()
     return features, labels
+
+
+def encode_phenotype_labels(
+    df: pd.DataFrame,
+    phenotype_column: str = "cell_type",
+) -> Tuple[Any, pd.DataFrame, Any]:
+    """Encode a phenotype column into integer labels plus a consistent label map.
+
+    This is the SINGLE label-encoding routine shared across all benchmark
+    methods so that ground-truth cell-type mapping is identical everywhere.
+    ``labels`` is a DataFrame with ``label`` (0..K-1) and ``phenotype``
+    columns, sorted alphabetically by phenotype (sklearn ``LabelEncoder``
+    convention). Callers persist this to ``labels_{kfold}_{granularity}.csv``.
+    """
+    from sklearn.preprocessing import LabelEncoder
+
+    if phenotype_column not in df.columns:
+        raise ValueError(f"Phenotype column '{phenotype_column}' missing from data.")
+
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(df[phenotype_column].astype(str))
+    labels = pd.DataFrame(
+        {"label": range(len(encoder.classes_)), "phenotype": encoder.classes_}
+    )
+    return y, labels, encoder
+
+
+def build_feature_matrix(
+    df: pd.DataFrame,
+    markers: Optional[List[str]] = None,
+    *,
+    drop_spatial: bool = True,
+    drop_labels: bool = True,
+    keep_id: bool = False,
+    phenotype_column: str = "cell_type",
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Build a STRICTLY NON-SPATIAL protein-expression feature matrix.
+
+    Only protein marker columns (plus an optional ``Cell_ID``) are returned as
+    features. Spatial (X, Y) coordinates and cell-type label columns are always
+    stripped from the matrix used during model training/prediction; they are
+    preserved separately for spatial diagnostics by the caller.
+
+    Parameters
+    ----------
+    df:
+        Processed quantification table.
+    markers:
+        Configured marker column names. When ``None`` every numeric column
+        that is not a spatial/label/metadata column is kept.
+    drop_spatial:
+        Strip spatial (X, Y) columns from the feature matrix (default True —
+        non-spatial masking is enforced in every model wrapper).
+    drop_labels:
+        Strip cell-type / pseudo-label columns from the feature matrix.
+    keep_id:
+        Keep ``Cell_ID`` as the first column (used to re-attach predictions).
+    phenotype_column:
+        Name of the ground-truth label column.
+    """
+    feature = df.copy()
+    to_drop: List[str] = []
+
+    if drop_spatial:
+        to_drop.extend(c for c in SPATIAL_COLUMNS if c in feature.columns)
+    if drop_labels:
+        label_cols = [c for c in LABEL_COLUMNS if c in feature.columns]
+        if phenotype_column not in LABEL_COLUMNS and phenotype_column in feature.columns:
+            label_cols.append(phenotype_column)
+        to_drop.extend(label_cols)
+
+    to_drop = [c for c in dict.fromkeys(to_drop) if c in feature.columns]
+
+    if markers is not None:
+        present = [m for m in markers if m in feature.columns]
+        if not present:
+            raise ValueError(
+                f"None of the configured markers present. Expected some of {markers} "
+                f"in {list(feature.columns)}."
+            )
+        cols = [c for c in present if c not in to_drop]
+    else:
+        ignore = set(to_drop) | set(STANDARD_METADATA_COLUMNS) | {"csv", "orig.ident"}
+        cols = [
+            c
+            for c in feature.columns
+            if c not in ignore
+            and c not in LABEL_COLUMNS
+            and not c.startswith("prob_")
+            and pd.api.types.is_numeric_dtype(feature[c])
+        ]
+
+    if keep_id and "Cell_ID" in feature.columns and "Cell_ID" not in cols:
+        cols = ["Cell_ID", *[c for c in cols if c != "Cell_ID"]]
+
+    if not cols:
+        raise ValueError("No protein feature columns could be resolved.")
+
+    return feature[cols].copy(), cols
 
 
 def get_marker_columns(config: Dict[str, Any]) -> List[str]:

@@ -12,6 +12,7 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier as rfc
+from sklearn.svm import SVC
 from xgboost import XGBClassifier
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.dummy import DummyClassifier
@@ -19,6 +20,28 @@ import json
 import csv
 import pickle
 import time
+
+
+def _sensitivity_specificity(y_true, y_pred, labels):
+    """Macro sensitivity (recall) and macro specificity (per-class TNR averaged).
+
+    Specificity for class *i* is the true-negative rate computed from a one-vs-rest
+    confusion table; the macro score averages over all classes.
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    sensitivities, specificities = [], []
+    for i, label in enumerate(labels):
+        tp = cm[i, i]
+        fn = cm[i, :].sum() - tp
+        fp = cm[:, i].sum() - tp
+        tn = cm.sum() - (tp + fn + fp)
+        if (tp + fn) > 0:
+            sensitivities.append(tp / (tp + fn))
+        if (tn + fp) > 0:
+            specificities.append(tn / (tn + fp))
+    sens = float(np.mean(sensitivities)) if sensitivities else 0.0
+    spec = float(np.mean(specificities)) if specificities else 0.0
+    return sens, spec
 
 
 class ClassicMLDefault:
@@ -32,6 +55,19 @@ class ClassicMLDefault:
             self.model_name = "random_forest"
             self.model = rfc(
                 n_jobs=n_jobs, random_state=random_state, criterion="log_loss", **kwargs
+            )
+        elif model == "svm":
+            # SVC has no n_jobs — pop it so it is not forwarded to the estimator.
+            self.model_name = "svm"
+            kwargs.pop("n_jobs", None)
+            if "class_weight" not in kwargs:
+                kwargs["class_weight"] = "balanced"
+            self.model = SVC(
+                probability=True,
+                decision_function_shape="ovr",
+                max_iter=-1,
+                random_state=random_state,
+                **kwargs,
             )
         elif model == "xgboost":
             self.class_weight = kwargs.pop("class_weight", None)
@@ -56,7 +92,8 @@ class ClassicMLDefault:
             )
         else:
             raise ValueError(
-                "Invalid model. Pleaseso choose either 'logistic_regression', 'xgboost', 'random_forest', 'most_frequent or 'stratified' as model parameter."
+                "Invalid model. Please choose either 'logistic_regression', 'xgboost', "
+                "'random_forest', 'svm', 'most_frequent' or 'stratified' as model parameter."
             )
 
         self.kwargs = kwargs
@@ -66,6 +103,9 @@ class ClassicMLDefault:
         self.fold_accuracies = []
         self.fold_f1_scores = []
         self.fold_weighted_f1_scores = []
+        self.fold_micro_f1_scores = []
+        self.fold_sensitivities = []
+        self.fold_specificities = []
         self.fold_precisions = []
         self.fold_recalls = []
         self.confusion_matrices = []
@@ -73,12 +113,16 @@ class ClassicMLDefault:
         self.average_accuracy = None
         self.average_f1_score = None
         self.average_weighted_f1_score = None
+        self.average_micro_f1_score = None
+        self.average_sensitivity = None
+        self.average_specificity = None
         self.average_precision = None
         self.average_recall = None
         self.best_models = []
         self.predictions = {}
         self.train_times = []
         self.pred_times = []
+        self.feature_importances = {}
 
         print("Class initialized successfully with the following model parameters:")
         print(f"Random State: {self.random_state}")
@@ -146,6 +190,15 @@ class ClassicMLDefault:
                     random_state=self.random_state,
                     criterion="log_loss",
                     **self.kwargs,
+                )
+            elif self.model_name == "svm":
+                svm_kwargs = {k: v for k, v in self.kwargs.items() if k != "n_jobs"}
+                self.model = SVC(
+                    probability=True,
+                    decision_function_shape="ovr",
+                    max_iter=-1,
+                    random_state=self.random_state,
+                    **svm_kwargs,
                 )
             elif self.model_name == "xgboost":
                 self.model = XGBClassifier(
@@ -308,15 +361,20 @@ class ClassicMLDefault:
             accuracy = accuracy_score(y_test, y_pred_test)
             f1 = f1_score(y_test, y_pred_test, average="macro")
             weighted_f1 = f1_score(y_test, y_pred_test, average="weighted")
+            micro_f1 = f1_score(y_test, y_pred_test, average="micro")
             precision = precision_score(y_test, y_pred_test, average="macro")
             recall = recall_score(y_test, y_pred_test, average="macro")
             cm = confusion_matrix(y_test, y_pred_test, labels=all_labels)
             cr = classification_report(y_test, y_pred_test, output_dict=False)
+            sens, spec = _sensitivity_specificity(y_test, y_pred_test, labels=all_labels)
 
             self.predictions[f"fold_{c+1}"] = y_pred_test
             self.fold_accuracies.append(accuracy)
             self.fold_f1_scores.append(f1)
             self.fold_weighted_f1_scores.append(weighted_f1)
+            self.fold_micro_f1_scores.append(micro_f1)
+            self.fold_sensitivities.append(sens)
+            self.fold_specificities.append(spec)
             self.fold_precisions.append(precision)
             self.fold_recalls.append(recall)
             self.confusion_matrices.append(cm)
@@ -331,6 +389,9 @@ class ClassicMLDefault:
         self.average_accuracy = np.mean(self.fold_accuracies)
         self.average_f1_score = np.mean(self.fold_f1_scores)
         self.average_weighted_f1_score = np.mean(self.fold_weighted_f1_scores)
+        self.average_micro_f1_score = np.mean(self.fold_micro_f1_scores)
+        self.average_sensitivity = np.mean(self.fold_sensitivities)
+        self.average_specificity = np.mean(self.fold_specificities)
         self.average_precision = np.mean(self.fold_precisions)
         self.average_recall = np.mean(self.fold_recalls)
         print(f"Average Accuracy: {self.average_accuracy}")
@@ -362,6 +423,9 @@ class ClassicMLDefault:
             "average_accuracy": self.average_accuracy,
             "average_f1_score": self.average_f1_score,
             "average_weighted_f1_score": self.average_weighted_f1_score,
+            "average_micro_f1_score": self.average_micro_f1_score,
+            "average_sensitivity": self.average_sensitivity,
+            "average_specificity": self.average_specificity,
             "average_precision": self.average_precision,
             "average_recall": self.average_recall,
         }
@@ -371,6 +435,8 @@ class ClassicMLDefault:
             json_name = "average_rfc_results.json"
         elif self.model_name == "logistic_regression":
             json_name = "average_logreg_results.json"
+        elif self.model_name == "svm":
+            json_name = "average_svm_results.json"
         elif self.model_name == "xgboost":
             json_name = "average_xgboost_results.json"
         elif self.model_name == "most_frequent":
@@ -481,3 +547,91 @@ class ClassicMLDefault:
             print(f"Best models for all folds saved successfully in {models_path}.")
         else:
             print(f"Results saved successfully in {save_path}. Models not saved.")
+
+    def save_feature_importances(self, save_path, label_path, data_path):
+        """Objective 2 — export top-5 predictive markers per cell type.
+
+        Importance source depends on the estimator: tree ``feature_importances_``,
+        linear ``coef_`` magnitudes for LogisticRegression / linear-kernel SVC, and
+        a last-resort permutation importance probe. Values are averaged over folds.
+        """
+        feature_file = os.path.join(data_path, "fold_1_train.csv")
+        if not os.path.exists(feature_file):
+            print("Cannot export feature importances: fold_1_train.csv not found.")
+            return None
+        meta_cols = [
+            "Cell_ID", "Image_ID", "Patient_ID", "x", "y", "batch_id",
+            "sample_id", "sample_name", "cell_type", "level_1_cell_type",
+            "level_2_cell_type", "cell_labels",
+        ]
+        try:
+            from ground_truth import DEFAULT_EVAL_DROP_COLUMNS  # noqa: WPS433
+            meta_cols = DEFAULT_EVAL_DROP_COLUMNS
+        except Exception:  # pragma: no cover - fall back to the local list
+            pass
+        feature_names = [
+            c for c in pd.read_csv(feature_file, nrows=2).columns
+            if c != "encoded_phenotype" and c not in meta_cols
+        ]
+
+        importances = {}
+        for fold_idx, model in enumerate(self.best_models, start=1):
+            try:
+                if hasattr(model, "feature_importances_"):
+                    imp = np.asarray(model.feature_importances_, dtype=float).ravel()
+                elif hasattr(model, "coef_"):
+                    coef = np.asarray(model.coef_, dtype=float)
+                    imp = np.abs(coef).mean(axis=0) if coef.ndim == 2 else np.abs(coef).ravel()
+                else:
+                    from sklearn.inspection import permutation_importance
+
+                    train = pd.read_csv(os.path.join(data_path, f"fold_{fold_idx}_train.csv"))
+                    perm = permutation_importance(
+                        model, train[feature_names], train["encoded_phenotype"],
+                        n_repeats=5, random_state=self.random_state, n_jobs=-1,
+                    )
+                    imp = perm.importances_mean
+                if len(imp) != len(feature_names):
+                    continue
+                importances[fold_idx] = imp
+            except Exception as exc:  # pragma: no cover - estimator-dependent
+                print(f"Feature importance extraction skipped (fold {fold_idx}): {exc}")
+                return None
+
+        if not importances:
+            return None
+        mean_imp = np.mean(list(importances.values()), axis=0)
+
+        labels = pd.read_csv(label_path)
+        label_dict = dict(zip(labels["label"], labels["phenotype"]))
+        rows = []
+        n_classes = int(labels["label"].nunique())
+        for class_idx in range(n_classes):
+            class_imp = self._classwise_importance(class_idx, feature_names) or mean_imp
+            top_idx = np.argsort(class_imp)[::-1][:5]
+            rows.append({
+                "cell_type": label_dict.get(class_idx, str(class_idx)),
+                "marker_1": feature_names[top_idx[0]],
+                "marker_2": feature_names[top_idx[1]] if len(top_idx) > 1 else "",
+                "marker_3": feature_names[top_idx[2]] if len(top_idx) > 2 else "",
+                "marker_4": feature_names[top_idx[3]] if len(top_idx) > 3 else "",
+                "marker_5": feature_names[top_idx[4]] if len(top_idx) > 4 else "",
+            })
+
+        out = pd.DataFrame(rows)
+        path = os.path.join(save_path, "feature_importance_top5.csv")
+        out.to_csv(path, index=False)
+        print(f"Top-5 feature importances saved in: {path}")
+        return path
+
+    def _classwise_importance(self, class_idx, feature_names):
+        """Per-cell-type importance from linear ``coef_`` rows (ovr)."""
+        importances = []
+        for model in self.best_models:
+            if hasattr(model, "coef_"):
+                coef = np.asarray(model.coef_, dtype=float)
+                if coef.ndim == 2 and class_idx < coef.shape[0]:
+                    importances.append(np.abs(coef[class_idx]))
+        if not importances:
+            return None
+        return np.mean(importances, axis=0)

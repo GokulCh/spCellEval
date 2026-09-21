@@ -75,6 +75,70 @@ def progressive_kfold_splits(
     return folds
 
 
+def stratified_80_20_split(
+    y: np.ndarray,
+    random_state: int = 42,
+    test_size: float = 0.2,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Objective 1 — baseline stratified 80% train / 20% test single split.
+
+    Ratios are stratifed on the cell-type labels so every phenotype keeps its
+    population share in both partitions (following the same ``train_test_split``
+    convention used elsewhere in this package).
+    """
+    if not 0.0 < test_size < 1.0:
+        raise ValueError("test_size must be a float in (0, 1).")
+    try:
+        train_idx, test_idx = train_test_split(
+            np.arange(len(y)),
+            test_size=test_size,
+            stratify=y,
+            random_state=random_state,
+        )
+    except ValueError:
+        # A class too small to stratify — fall back to a shuffled split.
+        rng = np.random.RandomState(random_state)
+        idx = rng.permutation(len(y))
+        n_test = int(round(len(y) * test_size))
+        test_idx, train_idx = idx[:n_test], idx[n_test:]
+    return np.asarray(train_idx, dtype=int), np.asarray(test_idx, dtype=int)
+
+
+# Objective 4 — training-amount efficiency sweep (fractions of the 80% train pool).
+SUBSAMPLING_FRACTIONS: Tuple[float, ...] = (0.01, 0.05, 0.10, 0.20, 0.40, 0.60, 0.80)
+
+
+def subsample_stratified_indices(
+    y: np.ndarray,
+    train_idx: Sequence[int],
+    fraction: float,
+    random_state: int = 42,
+) -> np.ndarray:
+    """Stratified subsample of the (80%) training pool for a given fraction.
+
+    Keeps a fixed 20% holdout untouched; only the training pool is shrunk, so
+    test metrics remain comparable across the fractions sweep.
+    """
+    if fraction <= 0.0 or fraction > 1.0:
+        raise ValueError(f"fraction must be in (0, 1]; got {fraction}.")
+    pool = np.asarray(train_idx, dtype=int)
+    if fraction >= 1.0:
+        return pool
+    pool_y = y[pool]
+    try:
+        sub, _ = train_test_split(
+            pool,
+            train_size=fraction,
+            stratify=pool_y,
+            random_state=random_state,
+        )
+    except ValueError:
+        rng = np.random.RandomState(random_state)
+        n_take = max(1, int(round(len(pool) * fraction)))
+        sub = rng.choice(pool, size=n_take, replace=False)
+    return np.asarray(sub, dtype=int)
+
+
 def classify_frequency_tier(
     fraction: float,
     *,
@@ -86,6 +150,22 @@ def classify_frequency_tier(
         return "rare"
     if fraction >= common_fraction:
         return "common"
+    return "intermediate"
+
+
+def classify_abundance_tier(
+    fraction: float,
+    *,
+    abundant_fraction: float = 0.05,
+    rare_fraction: float = 0.01,
+) -> str:
+    """Objective 2 — abundance tiers exactly as specified:
+    ``abundant`` = >5% of total cells, ``rare`` = <=1%, else ``intermediate``.
+    """
+    if fraction > abundant_fraction:
+        return "abundant"
+    if fraction <= rare_fraction:
+        return "rare"
     return "intermediate"
 
 

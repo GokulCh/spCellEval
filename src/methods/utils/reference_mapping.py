@@ -66,6 +66,92 @@ def singler_predict(
     return np.array(predictions, dtype=object)
 
 
+def _pearson_sim_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Vectorized Pearson correlations between rows of ``a`` and rows of ``b``."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    a0 = a - a.mean(axis=1, keepdims=True)
+    b0 = b - b.mean(axis=1, keepdims=True)
+    an = np.linalg.norm(a0, axis=1, keepdims=True)
+    bn = np.linalg.norm(b0, axis=1, keepdims=True)
+    sim = (a0 @ b0.T) / (an @ bn.T + 1e-12)
+    sim[~np.isfinite(sim)] = -1.0
+    return sim
+
+
+def hungarian_capacity_assignment(
+    cost_matrix: np.ndarray,
+    capacities: Sequence[int],
+) -> np.ndarray:
+    """Assign each row to a column under per-column capacity (Hungarian/Munkres).
+
+    Columns are repeated according to their capacity so that
+    :func:`scipy.optimize.linear_sum_assignment` solves the linear assignment
+    with quotas. Excess capacity (or rows beyond capacity) are clipped, and the
+    returned array maps every row to a column index.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    cost_matrix = np.asarray(cost_matrix, dtype=float)
+    n_rows, n_types = cost_matrix.shape
+    total_cap = int(sum(capacities))
+    if n_rows == 0 or total_cap == 0:
+        return np.zeros(n_rows, dtype=int)
+
+    repeat = max(1, int(np.ceil(n_rows / total_cap)))
+    duplicated_cols = np.repeat(np.arange(n_types, dtype=int), [int(c) * repeat for c in capacities])
+    duplicated_cols = duplicated_cols[:n_rows]
+    sub_cost = cost_matrix[:, duplicated_cols]
+    row_idx, col_idx = linear_sum_assignment(sub_cost)
+    return duplicated_cols[col_idx]
+
+
+def ribca_predict(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    markers: Sequence[str],
+    label_dict: Dict[int, str],
+    label_col: str = "encoded_phenotype",
+    *,
+    min_corr: Optional[float] = None,
+    use_hungarian: bool = True,
+    hungarian_max_cells: int = 20000,
+) -> np.ndarray:
+    """RIBCA_adapted — reference-guided cell typing for TMA benchmarking.
+
+    Pipeline (adapted from RIBCA's reference-informed ideas):
+      1. Build per-cell-type mean expression reference profiles on training data.
+      2. Score every test cell against all profiles via vectorized Pearson
+         correlation.
+      3. Optionally threshold low-confidence ``min_corr`` cells (they revert to
+         their nearest reference type).
+      4. Refine the hard assignment with a capacity-constrained Hungarian joint
+         assignment (Munkres) to keep predicted type frequencies coherent with
+         the correlation evidence. The Hungarian step is only used when the test
+         matrix is small enough to keep the joint assignment tractable.
+    """
+    profiles = build_reference_profiles(train_df, markers, label_col=label_col)
+    test_matrix = test_df[list(markers)].to_numpy(dtype=float)
+    profile_matrix = profiles.to_numpy(dtype=float)
+    labels = profiles.index.to_numpy()
+    n_types = len(labels)
+
+    sim = _pearson_sim_matrix(test_matrix, profile_matrix)
+    if min_corr is not None:
+        below = sim < min_corr
+        if below.any():
+            sim[below] = np.min(sim, axis=1, keepdims=True)[below]
+
+    if use_hungarian and len(test_matrix) <= hungarian_max_cells and n_types <= 32:
+        hard = sim.argmax(axis=1)
+        capacities = np.bincount(hard, minlength=n_types).tolist()
+        assignments = hungarian_capacity_assignment(-sim, capacities)
+    else:
+        assignments = sim.argmax(axis=1)
+
+    return np.array([label_dict[int(labels[i])] for i in assignments], dtype=object)
+
+
 def scarches_predict(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
