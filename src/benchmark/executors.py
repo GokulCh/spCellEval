@@ -95,8 +95,16 @@ def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: Optional[int] 
 
 
 def _dumb_columns_for_ml(ctx: DatasetContext) -> List[str]:
-    """Columns to drop from k-fold feature matrices (Stage 2 ground-truth list)."""
-    return [c for c in DEFAULT_EVAL_DROP_COLUMNS if c not in ctx.markers]
+    """Columns to drop from k-fold feature matrices (Stage 2 ground-truth list).
+
+    Includes standard metadata, label columns, AND spatial coordinate variants
+    (``SPATIAL_COLUMNS``) so no ``X``/``Y``/``Pos_X`` obs columns ever leak into
+    model features even when k-fold CSVs contain them.
+    """
+    from ground_truth import SPATIAL_COLUMNS  # noqa: WPS433
+
+    extra = [c for c in SPATIAL_COLUMNS if c not in DEFAULT_EVAL_DROP_COLUMNS]
+    return [c for c in [*DEFAULT_EVAL_DROP_COLUMNS, *extra] if c not in ctx.markers]
 
 
 # ── Supervised k-fold ─────────────────────────────────────────────────────

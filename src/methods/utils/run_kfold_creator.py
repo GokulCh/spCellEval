@@ -40,6 +40,25 @@ def _resolve_drop_columns(drop_columns, strip_labels: bool, phenotype_column: st
     return merged
 
 
+def _restrict_to_markers(data_handler, marker_columns, batch_identifier_column):
+    """Restrict ``X`` to protein markers (+ batch column) to prevent leaks.
+
+    Additional metadata / obs columns (e.g. ``neighborhood10``, ``spots``,
+    ``Region``) that survive preprocessing are dropped from the fold features
+    so models can never see non-protein identity or spatial-adjacency columns.
+    """
+    if not marker_columns:
+        return
+    keep = [c for c in marker_columns if c in data_handler.X.columns]
+    if batch_identifier_column is not None and batch_identifier_column in data_handler.X.columns:
+        keep.append(batch_identifier_column)
+    if not keep:
+        print(f"WARNING: no marker columns matched the quantification table; keeping X unchanged")
+        return
+    print(f"Restricting X to protein marker columns ({len(keep)}): {keep}")
+    data_handler.X = data_handler.X[keep].copy()
+
+
 def run_fold_creation(
     main_dir,
     dataset_name,
@@ -59,10 +78,15 @@ def run_fold_creation(
     rare_fraction=0.01,
     common_fraction=0.05,
     methods=None,
+    marker_columns=None,
 ):
     """
     Create k-fold splits. When *methods* is provided, preprocess the quant CSV once
     and emit every listed split strategy in a single pass.
+
+    When *marker_columns* is provided, ``X`` is restricted to those protein
+    markers (plus the optional batch column) so that no metadata / obs columns
+    (e.g. ``neighborhood10``, ``spots``) ever leak into the fold features.
     """
     fold_methods = list(methods) if methods else [method]
 
@@ -98,6 +122,7 @@ def run_fold_creation(
             drop_columns=drop_columns,
             drop_non_numerical=drop_non_numerical,
         )
+        _restrict_to_markers(data_handler, marker_columns, batch_identifier_column)
         representation_saved = False
         for fold_method in fold_methods:
             kfold_path = os.path.join(save_dir, f'kfolds_{fold_method}_{granularity_level}')
@@ -267,14 +292,26 @@ def main():
         help = 'percentage of data to be used as validation set. Default is 0.15',
         default = 0.15,
     )
+    parser.add_argument(
+        '--marker_columns',
+        type = str,
+        default = None,
+        help = 'Comma-separated protein marker columns to keep as features. '
+               'Restricts X to markers (+ batch col) so metadata/obs columns '
+               'never leak into the fold CSVs.',
+    )
 
     args = parser.parse_args()
+    marker_columns = None
+    if args.marker_columns:
+        marker_columns = [c.strip() for c in args.marker_columns.split(",") if c.strip()]
     run_fold_creation(
         args.main_dir, args.dataset_name, args.dropna, args.impute_value, args.phenotype_column,
         args.batch_identifier_column, args.drop_columns, args.drop_non_numerical, args.n_splits,
         args.method, args.group_shuffle_split_size, args.swap_train_test, args.random_state,
         args.percentage_validation, args.strip_labels, args.rare_fraction, args.common_fraction,
         methods=args.methods,
+        marker_columns=marker_columns,
     )
     print("Done.")
 if __name__ == '__main__':

@@ -92,6 +92,11 @@ def run_pipeline(
     unlabeled: bool = False,
     kfold_method: Optional[str] = None,
     parallel_jobs: Optional[int] = None,
+    baseline_split: bool = False,
+    cross_validation: bool = False,
+    subsample_experiment: bool = False,
+    fractions: str = "0.01,0.05,0.10,0.20,0.40,0.60,0.80",
+    holdout: float = 0.20,
     benchmark_config: Optional[Path] = None,
     root: Path = _REPO,
     parent_log_active: bool = False,
@@ -198,6 +203,13 @@ def run_pipeline(
             cmd.append("--ensure_kfolds")
         if kfold_method:
             cmd.extend(["--kfold_method", kfold_method])
+        if baseline_split:
+            cmd.append("--baseline_split")
+        if cross_validation:
+            cmd.append("--cross_validation")
+        if subsample_experiment:
+            cmd.append("--subsample_experiment")
+            cmd.extend(["--fractions", fractions, "--holdout", str(holdout)])
         if workers > 1:
             cmd.extend(["--parallel_jobs", str(workers)])
         if parent_log_active:
@@ -310,6 +322,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--recreate_kfolds", action="store_true")
     p.add_argument(
+        "--baseline_split",
+        action="store_true",
+        help="Objective 1 — run the baseline 80/20 split experiment.",
+    )
+    p.add_argument(
+        "--cross_validation",
+        action="store_true",
+        help="Objective 3 — run the 5-fold cross-validation summary.",
+    )
+    p.add_argument(
+        "--subsample_experiment",
+        action="store_true",
+        help="Objective 4 — run the training-size efficiency (subsampling) sweep.",
+    )
+    p.add_argument(
+        "--fractions",
+        type=str,
+        default="0.01,0.05,0.10,0.20,0.40,0.60,0.80",
+        help="Comma-separated train fractions for --subsample_experiment.",
+    )
+    p.add_argument(
+        "--holdout",
+        type=float,
+        default=0.20,
+        help="Fixed test fraction for --baseline_split / --subsample_experiment.",
+    )
+    p.add_argument(
         "--kfold_method",
         type=str,
         choices=["StratifiedKFold", "ProgressiveKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
@@ -365,6 +404,11 @@ def main() -> None:
             unlabeled=args.unlabeled,
             kfold_method=args.kfold_method,
             parallel_jobs=args.parallel_jobs,
+            baseline_split=args.baseline_split,
+            cross_validation=args.cross_validation,
+            subsample_experiment=args.subsample_experiment,
+            fractions=args.fractions,
+            holdout=args.holdout,
             benchmark_config=args.benchmark_config,
             root=root,
             parent_log_active=not args.no_log_file,

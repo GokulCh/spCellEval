@@ -13,7 +13,10 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier as rfc
 from sklearn.svm import SVC
-from xgboost import XGBClassifier
+try:
+    from xgboost import XGBClassifier
+except ImportError:  # xgboost not installed — the other classic models still work
+    XGBClassifier = None  # type: ignore[assignment, misc]
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.dummy import DummyClassifier
 import json
@@ -72,6 +75,11 @@ class ClassicMLDefault:
         elif model == "xgboost":
             self.class_weight = kwargs.pop("class_weight", None)
             self.model_name = "xgboost"
+            if XGBClassifier is None:
+                raise ValueError(
+                    "Model 'xgboost' requested but the 'xgboost' package is not installed. "
+                    "Install it with `pip install xgboost`."
+                )
             self.model = XGBClassifier(
                 objective="multi:softmax",
                 eval_metric="mlogloss",
@@ -201,6 +209,8 @@ class ClassicMLDefault:
                     **svm_kwargs,
                 )
             elif self.model_name == "xgboost":
+                if XGBClassifier is None:
+                    raise ValueError("xgboost is not installed; cannot retrain XGBoost.")
                 self.model = XGBClassifier(
                     objective="multi:softmax",
                     eval_metric="mlogloss",
@@ -573,30 +583,59 @@ class ClassicMLDefault:
             c for c in pd.read_csv(feature_file, nrows=2).columns
             if c != "encoded_phenotype" and c not in meta_cols
         ]
+        if not feature_names:
+            print("Cannot export feature importances: no feature columns found.")
+            return None
+
+        def _linear_coef(model):
+            """coef_ only exists for linear kernels; other kernels raise."""
+            if getattr(model, "kernel", None) not in (None, "linear"):
+                return None
+            try:
+                return np.asarray(model.coef_, dtype=float)
+            except (AttributeError, ValueError, NotImplementedError):
+                return None
 
         importances = {}
         for fold_idx, model in enumerate(self.best_models, start=1):
             try:
                 if hasattr(model, "feature_importances_"):
                     imp = np.asarray(model.feature_importances_, dtype=float).ravel()
-                elif hasattr(model, "coef_"):
-                    coef = np.asarray(model.coef_, dtype=float)
-                    imp = np.abs(coef).mean(axis=0) if coef.ndim == 2 else np.abs(coef).ravel()
                 else:
-                    from sklearn.inspection import permutation_importance
+                    coef = _linear_coef(model)
+                    if coef is not None:
+                        imp = np.abs(coef).mean(axis=0) if coef.ndim == 2 else np.abs(coef).ravel()
+                    elif self.model_name in ("svm", "logistic_regression"):
+                        print(
+                            f"Feature importance extraction skipped (fold {fold_idx}): "
+                            f"{self.model_name} has no coef_/feature_importances_."
+                        )
+                        continue
+                    else:
+                        from sklearn.inspection import permutation_importance
 
-                    train = pd.read_csv(os.path.join(data_path, f"fold_{fold_idx}_train.csv"))
-                    perm = permutation_importance(
-                        model, train[feature_names], train["encoded_phenotype"],
-                        n_repeats=5, random_state=self.random_state, n_jobs=-1,
-                    )
-                    imp = perm.importances_mean
+                        train = pd.read_csv(
+                            os.path.join(data_path, f"fold_{fold_idx}_train.csv")
+                        )
+                        probe = train[feature_names]
+                        if len(probe) > 20000:  # cap runtime of the fallback probe
+                            probe = probe.sample(
+                                n=20000, random_state=self.random_state
+                            )
+                            perm_y = train["encoded_phenotype"].loc[probe.index]
+                        else:
+                            perm_y = train["encoded_phenotype"]
+                        perm = permutation_importance(
+                            model, probe, perm_y,
+                            n_repeats=5, random_state=self.random_state, n_jobs=-1,
+                        )
+                        imp = perm.importances_mean
                 if len(imp) != len(feature_names):
                     continue
                 importances[fold_idx] = imp
             except Exception as exc:  # pragma: no cover - estimator-dependent
                 print(f"Feature importance extraction skipped (fold {fold_idx}): {exc}")
-                return None
+                continue
 
         if not importances:
             return None
@@ -628,10 +667,14 @@ class ClassicMLDefault:
         """Per-cell-type importance from linear ``coef_`` rows (ovr)."""
         importances = []
         for model in self.best_models:
-            if hasattr(model, "coef_"):
+            if getattr(model, "kernel", None) not in (None, "linear"):
+                continue
+            try:
                 coef = np.asarray(model.coef_, dtype=float)
-                if coef.ndim == 2 and class_idx < coef.shape[0]:
-                    importances.append(np.abs(coef[class_idx]))
+            except (AttributeError, ValueError, NotImplementedError):
+                continue
+            if coef.ndim == 2 and class_idx < coef.shape[0]:
+                importances.append(np.abs(coef[class_idx]))
         if not importances:
             return None
         return np.mean(importances, axis=0)

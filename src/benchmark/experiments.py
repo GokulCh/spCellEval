@@ -300,11 +300,30 @@ def run_five_fold_cv(
 
     # Strict non-spatial masking on the real k-fold CSVs: drop metadata columns
     # (incl. x/y that run_kfold_creator deliberately keeps) from the features.
-    from ground_truth import DEFAULT_EVAL_DROP_COLUMNS  # noqa: WPS433
+    from ground_truth import DEFAULT_EVAL_DROP_COLUMNS, SPATIAL_COLUMNS  # noqa: WPS433
 
     fold_header = _csv_header(kdir / "fold_1_train.csv")
     dumb = [c for c in DEFAULT_EVAL_DROP_COLUMNS if c in fold_header]
-    markers = [c for c in fold_header if c not in dumb and c != "encoded_phenotype"]
+    dumb += [c for c in SPATIAL_COLUMNS if c in fold_header and c not in dumb]
+    # Defensive: only configured protein markers (plus batch col, excluded above)
+    # may act as features; any residual obs/morphology column is removed.
+    configured = [c for c in ctx.markers if c in fold_header]
+    non_marker = [
+        c for c in fold_header
+        if c != "encoded_phenotype"
+        and c not in configured
+        and c not in dumb
+        and c != ctx.batch_column
+    ]
+    if non_marker:
+        print(
+            f"Non-spatial masking: dropping {len(non_marker)} non-marker column(s) "
+            f"from k-fold features: {non_marker}"
+        )
+        dumb += non_marker
+    markers = [c for c in configured if c not in dumb] or [
+        c for c in fold_header if c not in dumb and c != "encoded_phenotype"
+    ]
 
     for method in methods:
         if method not in SUPERVISED_METHODS:

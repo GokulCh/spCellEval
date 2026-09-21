@@ -153,6 +153,8 @@ class DatasetContext:
             cmd.append("--strip_labels")
         if dropna:
             cmd.append("--dropna")
+        if self.markers:
+            cmd += ["--marker_columns", ",".join(self.markers)]
 
         print(
             f"[benchmark] Creating k-folds for {self.dataset_name} "
