@@ -37,10 +37,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
+import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor, wait
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -102,6 +105,7 @@ def run_benchmark(
     kfold_method: Optional[str] = None,
     kfold_methods: Optional[List[str]] = None,
     parallel_jobs: Optional[int] = None,
+    method_timeout: int = 3600,
     *,
     baseline_split: bool = False,
     cross_validation: bool = False,
@@ -255,16 +259,68 @@ def run_benchmark(
         spatial_k_neighbors=k_spatial,
         ml_n_jobs=ml_n_jobs,
     )
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(run_method_job, payload): payload["method_id"] for payload in payloads}
-        for future in as_completed(futures):
-            method_id, status, path, error = future.result()
-            logger.info("Method %s finished: %s", method_id, status)
-            if not _record(method_id, status, path, error) and fail_fast:
-                for pending in futures:
-                    if not pending.done():
-                        pending.cancel()
-                break
+
+    # Bound per-process OpenMP/thread pools so `workers * threads <= cpus`
+    # (prevents the XGBoost/libgomp oversubscription stall) and use the *spawn*
+    # context: forking workers from a main process that already initialised
+    # OpenMP/XGBoost thread pools is a documented deadlock source.
+    os.environ.setdefault("OMP_NUM_THREADS", str(max(1, ml_n_jobs)))
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", str(max(1, ml_n_jobs)))
+    os.environ.setdefault("MKL_NUM_THREADS", str(max(1, ml_n_jobs)))
+
+    mp_ctx = multiprocessing.get_context("spawn")
+    pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp_ctx)
+    futures: Dict = {}
+    submitted_at: Dict[str, float] = {}
+    for payload in payloads:
+        submitted_at[payload["method_id"]] = time.monotonic()
+        futures[pool.submit(run_method_job, payload)] = payload["method_id"]
+
+    pending = dict(futures)
+    timed_out: List[str] = []
+
+    try:
+        while pending:
+            done, _ = wait(list(pending), timeout=30)
+            now = time.monotonic()
+            for future in done:
+                method_id = pending.pop(future)
+                try:
+                    m_id, status, path, error = future.result()
+                except Exception as exc:  # worker crashed / pool broke — record, keep going
+                    m_id, status, path, error = method_id, "failed", None, f"{type(exc).__name__}: {exc}"
+                    logger.error("Worker for %s crashed: %s", method_id, error)
+                logger.info("Method %s finished: %s", m_id, status)
+                if not _record(m_id, status, path, error) and fail_fast:
+                    for f in pending:
+                        f.cancel()
+                    pending.clear()
+                    break
+
+            # Wall-clock timeout guard: a wedged worker must not freeze the batch.
+            for future in list(pending):
+                method_id = pending[future]
+                elapsed = now - submitted_at[method_id]
+                if elapsed > method_timeout:
+                    logger.error(
+                        "Method %s timed out after %.0fs — marked failed (worker may be wedged).",
+                        method_id, elapsed,
+                    )
+                    _record(method_id, "failed", None, f"timed out after {elapsed:.0f}s")
+                    timed_out.append(method_id)
+                    pending.pop(future)
+                    future.cancel()
+                    if fail_fast:
+                        for f in pending:
+                            f.cancel()
+                        pending.clear()
+                        break
+    finally:
+        # wait=False: never block on a wedged worker during teardown.
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    if timed_out:
+        logger.warning("Timed-out methods: %s", ", ".join(sorted(timed_out)))
 
     return results
 
@@ -371,6 +427,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of benchmark methods to run in parallel (0=auto, 1=sequential).",
     )
     p.add_argument(
+        "--method_timeout",
+        type=int,
+        default=3600,
+        help="Max wall-clock seconds per method in the parallel loop (0=never time out). "
+             "A wedged worker is marked failed and the batch continues. Default: 3600.",
+    )
+    p.add_argument(
         "--baseline_split",
         action="store_true",
         help="Objective 1 — run the baseline 80/20 train/test split experiment.",
@@ -460,6 +523,7 @@ def _run_benchmark_cli(args: argparse.Namespace) -> None:
         unlabeled=args.unlabeled,
         kfold_method=args.kfold_method,
         parallel_jobs=args.parallel_jobs,
+        method_timeout=args.method_timeout,
         baseline_split=args.baseline_split,
         cross_validation=args.cross_validation,
         subsample_experiment=args.subsample_experiment,

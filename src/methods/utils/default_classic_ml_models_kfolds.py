@@ -644,7 +644,9 @@ class ClassicMLDefault:
         rows = []
         n_classes = int(labels["label"].nunique())
         for class_idx in range(n_classes):
-            class_imp = self._classwise_importance(class_idx, feature_names) or mean_imp
+            class_imp = self._classwise_importance(class_idx, feature_names)
+            if class_imp is None:
+                class_imp = mean_imp
             top_idx = np.argsort(class_imp)[::-1][:5]
             rows.append({
                 "cell_type": label_dict.get(class_idx, str(class_idx)),
