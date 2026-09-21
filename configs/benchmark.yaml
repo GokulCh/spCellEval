@@ -87,3 +87,8 @@ datasets:
       - deepcelltypes
       - starling
       - cellsighter
+      - logistic_regression
+      - singler
+      - scarches
+      - spade
+      - signature

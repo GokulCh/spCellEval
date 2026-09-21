@@ -74,6 +74,27 @@ def _image_dataset_slug(ctx: DatasetContext) -> str:
     )
 
 
+def _image_pipeline_cfg(ctx: DatasetContext, method_id: str) -> dict:
+    """Per-dataset options for image pipelines, from the `image_pipelines:` block."""
+    return ctx.config.get("image_pipelines", {}).get(method_id, {})
+
+
+def _resolve_cfg_path(ctx: DatasetContext, rel) -> Optional[Path]:
+    if not rel:
+        return None
+    p = Path(str(rel))
+    return p if p.is_absolute() else ctx.root / p
+
+
+def _require_cfg_path(path: Optional[Path], ctx: DatasetContext, method_id: str, key: str) -> None:
+    if path is None or not path.exists():
+        raise MethodExecutionError(
+            f"Missing prerequisite for image pipeline {method_id}: '{key}' = "
+            f"{path or '<not set>'}. Set image_pipelines.{method_id}.{key} in "
+            f"{ctx.config_path.name} (relative to the repo root)."
+        )
+
+
 def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: Optional[int] = None) -> None:
     logger.info("Running: %s", " ".join(cmd))
     result = subprocess.run(
@@ -537,6 +558,73 @@ def run_image_pipeline(ctx: DatasetContext, spec: MethodSpec) -> Path:
             "-m", *ctx.markers,
             "-it", "1",
         ]
+        _run_cmd(cmd, timeout=7200)
+        return out
+
+    if spec.id == "nimbus":
+        opts = _image_pipeline_cfg(ctx, "nimbus")
+        images_dir = _resolve_cfg_path(ctx, opts.get("images_dir"))
+        seg_dir = _resolve_cfg_path(ctx, opts.get("seg_mask_dir"))
+        mpp = opts.get("mpp")
+        _require_cfg_path(images_dir, ctx, "nimbus", "images_dir")
+        _require_cfg_path(seg_dir, ctx, "nimbus", "seg_mask_dir")
+        if not mpp:
+            raise MethodExecutionError(
+                f"nimbus requires 'mpp' under image_pipelines.nimbus in {ctx.config_path.name}."
+            )
+        cmd = [
+            sys.executable, str(spec.script),
+            "-i", str(images_dir),
+            "-s", str(seg_dir),
+            "-o", str(out.parent),
+            "-m", *ctx.markers,
+            "--input_type", str(opts.get("input_type", "single")),
+            "--image_suffix", str(opts.get("image_suffix", "tiff")),
+            "--mask_type", str(opts.get("mask_type", "tiff")),
+            "-it", str(opts.get("iterations", 1)),
+            "--mpp", str(mpp),
+        ]
+        if opts.get("log") in ("short", "long"):
+            cmd.extend(["-l", str(opts["log"])])
+        _run_cmd(cmd, timeout=7200)
+        return out
+
+    if spec.id == "deepcelltypes":
+        opts = _image_pipeline_cfg(ctx, "deepcelltypes")
+        images_dir = _resolve_cfg_path(ctx, opts.get("images_dir"))
+        masks_dir = _resolve_cfg_path(ctx, opts.get("masks_dir"))
+        marker_path = _resolve_cfg_path(ctx, opts.get("marker_path"))
+        mpp = opts.get("mpp")
+        model_name = opts.get("model_name")
+        _require_cfg_path(images_dir, ctx, "deepcelltypes", "images_dir")
+        _require_cfg_path(masks_dir, ctx, "deepcelltypes", "masks_dir")
+        _require_cfg_path(marker_path, ctx, "deepcelltypes", "marker_path")
+        if not mpp:
+            raise MethodExecutionError(
+                f"deepcelltypes requires 'mpp' under image_pipelines.deepcelltypes in {ctx.config_path.name}."
+            )
+        if not model_name:
+            raise MethodExecutionError(
+                f"deepcelltypes requires 'model_name' under image_pipelines.deepcelltypes in {ctx.config_path.name}."
+            )
+        cmd = [
+            sys.executable, str(spec.script),
+            "--input_dirs", str(images_dir), str(masks_dir),
+            "--marker_path", str(marker_path),
+            "--quant_path", str(ctx.quant_path),
+            "--mpp", str(mpp),
+            "--model_name", str(model_name),
+            "--output_dir", str(out),
+            "--device", str(opts.get("device", "cuda")),
+            "--num_data_loader_threads", str(opts.get("num_data_loader_threads", 4)),
+            "--n_runs", str(opts.get("n_runs", 1)),
+        ]
+        if opts.get("strip_extensions"):
+            cmd.append("--strip_extensions")
+        if opts.get("rename_rules"):
+            rr = _resolve_cfg_path(ctx, opts["rename_rules"])
+            _require_cfg_path(rr, ctx, "deepcelltypes", "rename_rules")
+            cmd.extend(["--rename_rules", str(rr)])
         _run_cmd(cmd, timeout=7200)
         return out
 

@@ -143,3 +143,29 @@ output:
   output_filename:  "CRC_TMA_quantification.csv"
   formats: [csv, parquet, h5ad]
   export_features_only: true
+
+# ── 9. Image pipelines (Nimbus / DeepCellTypes) ───────────────────────────
+# The benchmark runner reads this block to invoke run_image_pipeline.
+# Both methods require raw image TIFFs + segmentation masks on disk (not part
+# of a quantification-only dataset) and, for deepcelltypes, a GPU.
+image_pipelines:
+  nimbus:
+    images_dir: data/raw/CRC_TMA/images
+    seg_mask_dir: data/raw/CRC_TMA/segmentation/masks
+    mpp: 1.0                 # microns-per-pixel of the raw images
+    input_type: single       # single (per-FOV channel folders) or ome
+    image_suffix: tiff       # tiff | tif | ome.tif | ome.tiff
+    mask_type: tiff          # tiff | tif
+    iterations: 1
+    log: short               # short | long | off
+  deepcelltypes:
+    images_dir: data/raw/CRC_TMA/images
+    masks_dir: data/raw/CRC_TMA/segmentation/masks
+    marker_path: configs/artifacts/CRC_TMA/deepcell_markers.txt
+    rename_rules: null       # optional JSON dict mapping sample_id -> image name
+    strip_extensions: true
+    mpp: 1.0                 # microns-per-pixel of the raw images
+    model_name: null         # required: DeepCellTypes model, e.g. "type_iv0_final"
+    device: cuda             # cuda | cpu
+    num_data_loader_threads: 4
+    n_runs: 1
