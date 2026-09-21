@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import multiprocessing
 import os
 import sys
 import time
@@ -260,16 +259,15 @@ def run_benchmark(
         ml_n_jobs=ml_n_jobs,
     )
 
-    # Bound per-process OpenMP/thread pools so `workers * threads <= cpus`
-    # (prevents the XGBoost/libgomp oversubscription stall) and use the *spawn*
-    # context: forking workers from a main process that already initialised
-    # OpenMP/XGBoost thread pools is a documented deadlock source.
+    # Bound per-process OpenMP/thread pools so XGBoost's internal OMP region uses
+    # `ml_n_jobs` threads instead of ALL cores (128) drifting into CPU
+    # oversubscription. The *fork* context is deliberately kept: this conda
+    # python build cannot start spawn/forkserver children (spawnv_passfds TypeError).
     os.environ.setdefault("OMP_NUM_THREADS", str(max(1, ml_n_jobs)))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(max(1, ml_n_jobs)))
     os.environ.setdefault("MKL_NUM_THREADS", str(max(1, ml_n_jobs)))
 
-    mp_ctx = multiprocessing.get_context("spawn")
-    pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp_ctx)
+    pool = ProcessPoolExecutor(max_workers=workers)
     futures: Dict = {}
     submitted_at: Dict[str, float] = {}
     for payload in payloads:
