@@ -208,6 +208,7 @@ def run_benchmark(
         if status == "skipped":
             results["skipped"].append(method_id)
             return True
+        logger.error("Method %s FAILED: %s", method_id, error or "failed")
         results["failed"].append((method_id, error or "failed"))
         return False
 
@@ -270,142 +271,200 @@ def run_benchmark(
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(max(1, ml_n_jobs)))
     os.environ.setdefault("MKL_NUM_THREADS", str(max(1, ml_n_jobs)))
 
-    pool = ProcessPoolExecutor(max_workers=workers)
-    in_flight: Dict = {}  # future -> method_id; only ~workers in flight at once
-    submitted_at: Dict[str, float] = {}
-    queued = list(payloads)  # sliding-window queue for methods not yet started
     timed_out: List[str] = []
-    pool_broken = False
-    stop = False
 
-    def _submit_next() -> bool:
-        """Queue the next method when a worker slot is free so the timeout is
-        measured from the method's actual start, not from batch start."""
-        if not queued:
-            return False
-        payload = queued.pop(0)
-        submitted_at[payload["method_id"]] = time.monotonic()
-        in_flight[pool.submit(run_method_job, payload)] = payload["method_id"]
-        return True
+    # ── Method pools ──────────────────────────────────────────────────────────
+    # Subprocess-launching methods (leiden/louvain/spade/flowsom/starling/...)
+    # create their children with os.fork() from `_run_cmd`. Forking from a
+    # worker that already executed in-process BLAS/OpenMP code (classic ML,
+    # reference mapping) aborts libgomp ("Terminating: fork() called from a
+    # process already using GNU OpenMP, this is unsafe."), killing the worker
+    # and poisoning the whole executor (every in-flight future fails). Keep
+    # the two kinds on SEPARATE pools so forking workers never carry in-process
+    # OpenMP threads.
+    subproc_categories = {
+        MethodCategory.UNSUPERVISED_QUANT,
+        MethodCategory.PRIOR_KNOWLEDGE,
+        MethodCategory.IMAGE_PIPELINE,
+    }
+    subproc_payloads = [
+        p for p in payloads
+        if METHOD_REGISTRY[p["method_id"]].category in subproc_categories
+    ]
+    inproc_payloads = [
+        p for p in payloads
+        if METHOD_REGISTRY[p["method_id"]].category not in subproc_categories
+    ]
 
-    def _cancel_all_in_flight() -> None:
-        for f in list(in_flight):
-            f.cancel()
-        in_flight.clear()
+    if subproc_payloads and inproc_payloads:
+        subproc_workers = max(1, workers // 2)
+        inproc_workers = max(1, workers - subproc_workers)
+        logger.info(
+            "Split process pools: %d subprocess worker(s), %d in-process worker(s)",
+            subproc_workers, inproc_workers,
+        )
+    else:
+        subproc_workers = inproc_workers = workers
+        logger.info("Single process pool: %d workers", workers)
 
-    try:
-        for _ in range(min(workers, len(queued))):
-            _submit_next()
-        if len(payloads) > workers:
-            logger.info(
-                "Bounded submission: %d workers, %d methods queued",
-                workers, len(queued),
-            )
+    def _run_method_pool(
+        group_payloads: List[Dict],
+        pool_workers: int,
+        scope: str,
+    ) -> None:
+        """Run *group_payloads* on their own ProcessPoolExecutor using a
+        sliding window (timeout measured from each method's actual start, not
+        from batch start). Per-method failures are isolated; only a dead
+        WORKER can break the pool, and that falls back to a sequential re-run
+        of the interrupted + queued methods instead of marking them failed."""
+        if not group_payloads:
+            return
+        payload_by_id = {p["method_id"]: p for p in group_payloads}
+        pool = ProcessPoolExecutor(max_workers=pool_workers)
+        in_flight: Dict = {}  # future -> method_id; only ~pool_workers in flight
+        submitted_at: Dict[str, float] = {}
+        queued = list(group_payloads)  # sliding-window queue
+        broken = False
+        stop = False
+        retry: List[Dict] = []  # in-flight methods poisoned by a worker crash
 
-        while in_flight and not stop:
-            done, _ = wait(list(in_flight), timeout=30)
-            now = time.monotonic()
+        def _submit_next() -> bool:
+            if not queued:
+                return False
+            payload = queued.pop(0)
+            submitted_at[payload["method_id"]] = time.monotonic()
+            in_flight[pool.submit(run_method_job, payload)] = payload["method_id"]
+            return True
 
-            for future in done:
-                method_id = in_flight.pop(future)
-                try:
-                    m_id, status, path, error = future.result()
-                except BrokenProcessPool as exc:
-                    # A worker died (OOM/SIGKILL/segfault). The executor then
-                    # poisons EVERY still-pending future, so stop using the
-                    # pool and finish the remaining methods sequentially.
-                    pool_broken = True
-                    m_id, status, path, error = method_id, "failed", None, (
-                        f"process pool broken (worker crashed): {exc}"
-                    )
-                    logger.error(
-                        "Worker for %s crashed — remaining methods will run sequentially: %s",
-                        method_id, error,
-                    )
-                except Exception as exc:  # per-method failure — isolation keeps the suite going
-                    m_id, status, path, error = method_id, "failed", None, f"{type(exc).__name__}: {exc}"
-                    logger.error("Worker for %s crashed: %s", method_id, error)
-                logger.info("Method %s finished: %s", m_id, status)
-                if not _record(m_id, status, path, error) and fail_fast:
-                    _cancel_all_in_flight()
-                    stop = True
-                    break
+        def _cancel_all_in_flight() -> None:
+            for f_ in list(in_flight):
+                f_.cancel()
+            in_flight.clear()
 
-            if pool_broken:
-                # The executor has already poisoned every in-flight future with
-                # BrokenProcessPool; drain them so their exceptions are
-                # retrieved (avoids "never retrieved" warnings) and never
-                # submit new work to the broken pool.
-                for f_ in list(in_flight):
-                    m_id_ = in_flight.pop(f_)
+        try:
+            for _ in range(min(pool_workers, len(queued))):
+                _submit_next()
+            if len(group_payloads) > pool_workers:
+                logger.info(
+                    "Bounded submission (%s): %d workers, %d methods queued",
+                    scope, pool_workers, len(queued),
+                )
+
+            while in_flight and not stop:
+                done, _ = wait(list(in_flight), timeout=30)
+                now = time.monotonic()
+
+                for future in done:
+                    method_id = in_flight.pop(future)
                     try:
-                        f_.result()
-                    except Exception as exc_:
-                        logger.error("Worker for %s crashed: %s", m_id_, exc_)
-                    if not _record(
-                        m_id_, "failed", None, "process pool broken (worker crashed)",
-                    ) and fail_fast:
-                        break
-                break
-            if stop:
-                break
-
-            # Per-method timeout guard (0 = never). Only applies to methods
-            # that are actually running, so one slow method cannot mark
-            # not-yet-started methods as failed.
-            for future in list(in_flight):
-                method_id = in_flight[future]
-                elapsed = now - submitted_at[method_id]
-                if method_timeout and elapsed > method_timeout:
-                    logger.error(
-                        "Method %s timed out after %.0fs — marked failed.",
-                        method_id, elapsed,
-                    )
-                    _record(method_id, "failed", None, f"timed out after {elapsed:.0f}s")
-                    timed_out.append(method_id)
-                    in_flight.pop(future)
-                    future.cancel()
-                    if fail_fast:
+                        m_id, status, path, error = future.result()
+                    except BrokenProcessPool as exc:
+                        # A worker died (OOM/SIGKILL/segfault). The executor
+                        # poisons every still-pending future, so stop using the
+                        # pool and re-run the interrupted + queued methods
+                        # sequentially instead of recording them as failed.
+                        broken = True
+                        retry.append(payload_by_id[method_id])
+                        logger.error(
+                            "Worker for %s crashed (%s) — interrupted methods "
+                            "will be re-run sequentially: %s",
+                            method_id, scope, exc,
+                        )
+                        continue
+                    except Exception as exc:  # per-method failure — isolation keeps the suite going
+                        m_id, status, path, error = method_id, "failed", None, f"{type(exc).__name__}: {exc}"
+                        logger.error("Method %s FAILED (%s): %s", method_id, scope, error)
+                    logger.info("Method %s finished: %s", m_id, status)
+                    if not _record(m_id, status, path, error) and fail_fast:
                         _cancel_all_in_flight()
                         stop = True
                         break
 
-            # Refill the pool with queued methods (sliding window).
-            while not stop and len(in_flight) < workers:
-                if not _submit_next():
+                if broken:
+                    # Collection the remaining poisoned in-flight methods for a
+                    # sequential retry; consume their exceptions but do NOT
+                    # record them as failed.
+                    for f_ in list(in_flight):
+                        retry.append(payload_by_id[in_flight.pop(f_)])
+                        try:
+                            f_.result()
+                        except BrokenProcessPool:
+                            pass  # expected — the worker died and poisoned it
+                        except Exception as exc_:
+                            logger.error("Interrupted method (%s): %s", scope, exc_)
                     break
-    finally:
-        # wait=False: never block on a wedged worker during teardown.
-        pool.shutdown(wait=False, cancel_futures=True)
+                if stop:
+                    break
 
-    # A worker crash poisons the whole executor: complete the remaining
-    # methods in-process instead of recording them all as failed.
-    if pool_broken and queued:
-        logger.warning(
-            "Pool broken — running %d remaining method(s) sequentially.",
-            len(queued),
-        )
-        for payload in queued:
-            method_id = payload["method_id"]
-            spec = METHOD_REGISTRY[method_id]
-            logger.info("=" * 60)
-            logger.info(
-                "Method: %s [%s] — %s (sequential fallback)",
-                spec.display_name,
-                spec.category.value,
-                spec.description,
-            )
-            try:
-                m_id, status, path, error = run_method_job(payload)
-            except Exception as exc:  # pragma: no cover - defensive
-                m_id, status, path, error = (
-                    method_id, "failed", None, f"{type(exc).__name__}: {exc}",
+                # Per-method timeout guard (0 = never). Only applies to methods
+                # that actually started, so one slow method cannot mark
+                # not-yet-started methods as failed.
+                for future in list(in_flight):
+                    method_id = in_flight[future]
+                    elapsed = now - submitted_at[method_id]
+                    if method_timeout and elapsed > method_timeout:
+                        logger.error(
+                            "Method %s timed out after %.0fs — marked failed.",
+                            method_id, elapsed,
+                        )
+                        _record(method_id, "failed", None, f"timed out after {elapsed:.0f}s")
+                        timed_out.append(method_id)
+                        in_flight.pop(future)
+                        future.cancel()
+                        if fail_fast:
+                            _cancel_all_in_flight()
+                            stop = True
+                            break
+
+                # Refill the pool with queued methods (sliding window).
+                while not stop and len(in_flight) < pool_workers:
+                    if not _submit_next():
+                        break
+        finally:
+            # wait=False: never block on a wedged worker during teardown.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        # A worker crash poisons the whole executor: finish the interrupted
+        # (in-flight) and queued methods in-process instead of recording them
+        # as failed. Subprocess-launching methods run FIRST so the main process
+        # never forks after in-process OpenMP/BLAS work.
+        leftovers = queued + retry
+        if leftovers:
+            if broken:
+                logger.warning(
+                    "Pool broken (%s) — running %d affected method(s) sequentially.",
+                    scope, len(leftovers),
                 )
-            logger.info("Method %s finished: %s", m_id, status)
-            if not _record(m_id, status, path, error) and fail_fast:
-                break
-    elif queued:
-        logger.info("%d queued method(s) not run (fail-fast).", len(queued))
+            else:
+                logger.info("%d queued method(s) not run (fail-fast).", len(leftovers))
+            leftovers.sort(
+                key=lambda p: (
+                    METHOD_REGISTRY[p["method_id"]].category not in subproc_categories,
+                    known_methods.index(p["method_id"]),
+                )
+            )
+            for payload in leftovers:
+                method_id = payload["method_id"]
+                spec = METHOD_REGISTRY[method_id]
+                logger.info("=" * 60)
+                logger.info(
+                    "Method: %s [%s] — %s (sequential fallback)",
+                    spec.display_name,
+                    spec.category.value,
+                    spec.description,
+                )
+                try:
+                    m_id, status, path, error = run_method_job(payload)
+                except Exception as exc:  # pragma: no cover - defensive
+                    m_id, status, path, error = (
+                        method_id, "failed", None, f"{type(exc).__name__}: {exc}",
+                    )
+                logger.info("Method %s finished: %s", m_id, status)
+                if not _record(m_id, status, path, error) and fail_fast:
+                    break
+
+    _run_method_pool(subproc_payloads, subproc_workers, "subprocess methods")
+    _run_method_pool(inproc_payloads, inproc_workers, "in-process methods")
 
     if timed_out:
         logger.warning("Timed-out methods: %s", ", ".join(sorted(timed_out)))
