@@ -61,6 +61,7 @@ def run_method_job(payload: Dict[str, Any]) -> Tuple[str, str, Optional[str], Op
             spatial_smooth=bool(payload.get("spatial_smooth", False)),
             spatial_k_neighbors=int(payload.get("spatial_k_neighbors", 15)),
             ml_n_jobs=int(payload.get("ml_n_jobs", -1)),
+            method_timeout=payload.get("method_timeout"),
         )
         if out is None:
             return method_id, "skipped", None, None
@@ -83,6 +84,7 @@ def build_method_payloads(
     spatial_smooth: bool,
     spatial_k_neighbors: int,
     ml_n_jobs: int,
+    method_timeout: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     return [
         {
@@ -96,6 +98,7 @@ def build_method_payloads(
             "spatial_smooth": spatial_smooth,
             "spatial_k_neighbors": spatial_k_neighbors,
             "ml_n_jobs": ml_n_jobs,
+            "method_timeout": method_timeout,
         }
         for method_id in methods
     ]

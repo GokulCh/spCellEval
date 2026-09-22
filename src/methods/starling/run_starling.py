@@ -125,7 +125,7 @@ def main():
         "--transform",
         type=str,
         help="Transformation to apply to the dataset",
-        choices=["log1p", "arcsinh"],
+        choices=["log1p", "arcsinh", "none"],
         default=None,
     )
     parser.add_argument(

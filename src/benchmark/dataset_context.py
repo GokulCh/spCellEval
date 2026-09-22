@@ -21,7 +21,7 @@ for _p in (_PSEUDO_DIR, _METHODS_UTILS):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from ground_truth import get_marker_columns, infer_separate_col  # noqa: E402
+from ground_truth import get_marker_columns, infer_separate_col, resolve_markers_in_quant  # noqa: E402
 from kfold_strategies import DEFAULT_SUPERVISED_KFOLD_METHODS, result_method_id  # noqa: E402
 
 
@@ -63,6 +63,18 @@ class DatasetContext:
         out_cfg = cfg.get("output", {})
         processed_dir = root / out_cfg.get("processed_dir", f"data/processed/{cfg['dataset_name']}")
         filename = out_cfg.get("output_filename", f"{cfg['dataset_name']}_quantification.csv")
+        quant_full = processed_dir / filename
+
+        # Resolve configured markers against the ACTUAL quant header so the
+        # full panel is used everywhere: k-fold marker restriction, clustering
+        # ``-m`` lists, reference mapping and prior-knowledge runners. Falls
+        # back to the cleaned config names when the quant CSV is unavailable.
+        markers = get_marker_columns(cfg)
+        try:
+            if quant_full.is_file():
+                markers = resolve_markers_in_quant(quant_full, markers)
+        except Exception:
+            pass
 
         batch_col = cfg.get("column_mappings", {}).get("batch_id")
         if batch_col == cfg.get("column_mappings", {}).get("image_id"):
@@ -79,10 +91,10 @@ class DatasetContext:
             config_path=config_path,
             config=cfg,
             dataset_name=cfg.get("dataset_name", config_path.stem),
-            quant_path=processed_dir / filename,
+            quant_path=quant_full,
             processed_dir=processed_dir,
-            markers=get_marker_columns(cfg),
-            split_col=infer_separate_col(cfg),
+            markers=markers,
+            split_col=infer_separate_col(cfg, quant_path=quant_full),
             kfold_method=kfold_methods[0],
             kfold_methods=kfold_methods,
             granularity=overrides.get("granularity", "level3"),

@@ -6,6 +6,7 @@ Category-specific method executors for the Stage 3 benchmark runner.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import shutil
@@ -20,6 +21,14 @@ from dataset_context import DatasetContext
 from method_registry import MethodCategory, MethodSpec, resolve_artifact
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock budget for the subprocesses spawned by the currently-executing
+# method. Set by execute_method so a harness "timed out" verdict is enforced
+# at the subprocess level (the runaway process is actually killed instead of
+# leaking CPU/RAM for the rest of the allocation).
+_METHOD_TIMEOUT: contextvars.ContextVar = contextvars.ContextVar(
+    "method_timeout", default=None
+)
 
 _REPO = Path(__file__).resolve().parents[2]
 _METHODS_UTILS = _REPO / "src" / "methods" / "utils"
@@ -97,6 +106,12 @@ def _require_cfg_path(path: Optional[Path], ctx: DatasetContext, method_id: str,
 
 def _run_cmd(cmd: List[str], cwd: Optional[Path] = None, timeout: Optional[int] = None) -> None:
     logger.info("Running: %s", " ".join(cmd))
+    # The harness-level method budget is authoritative: when set, it overrides
+    # the per-executor hardcoded caps so a "timed out" verdict always kills the
+    # wedged subprocess (and `0` = never, disabling the cap entirely).
+    budget = _METHOD_TIMEOUT.get()
+    if budget is not None:
+        timeout = budget if budget else None
     result = subprocess.run(
         cmd,
         cwd=str(cwd or _REPO),
@@ -315,7 +330,6 @@ def run_unsupervised(ctx: DatasetContext, spec: MethodSpec, iterations: int = 1)
             "--split_col_name", ctx.split_col,
             "--output_path", str(out),
             "--n_runs", str(iterations),
-            "--transform", "none",
         ]
         _run_cmd(cmd)
         return out
@@ -643,6 +657,7 @@ def execute_method(
     spatial_smooth: bool = False,
     spatial_k_neighbors: int = 15,
     ml_n_jobs: int = -1,
+    method_timeout: Optional[int] = None,
 ) -> Optional[Path]:
     """Run one method and return its output directory (or None if skipped)."""
     if spec.requires_r and not _check_tool("Rscript"):
@@ -663,6 +678,7 @@ def execute_method(
 
     start = time.time()
     mem_before = _peak_memory_mb()
+    timeout_token = _METHOD_TIMEOUT.set(method_timeout)
     try:
         if spec.category == MethodCategory.SUPERVISED_KFOLD:
             result = run_supervised_kfold(ctx, spec, ml_n_jobs=ml_n_jobs)
@@ -712,3 +728,5 @@ def execute_method(
         raise
     except Exception as exc:
         raise MethodExecutionError(f"{spec.id} failed: {exc}") from exc
+    finally:
+        _METHOD_TIMEOUT.reset(timeout_token)

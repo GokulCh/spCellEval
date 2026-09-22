@@ -41,6 +41,7 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -228,6 +229,7 @@ def run_benchmark(
                     spatial_smooth=do_spatial,
                     spatial_k_neighbors=k_spatial,
                     ml_n_jobs=ml_n_jobs,
+                    method_timeout=method_timeout,
                 )
                 if out is None:
                     results["skipped"].append(method_id)
@@ -257,6 +259,7 @@ def run_benchmark(
         spatial_smooth=do_spatial,
         spatial_k_neighbors=k_spatial,
         ml_n_jobs=ml_n_jobs,
+        method_timeout=method_timeout,
     )
 
     # Bound per-process OpenMP/thread pools so XGBoost's internal OMP region uses
@@ -268,54 +271,141 @@ def run_benchmark(
     os.environ.setdefault("MKL_NUM_THREADS", str(max(1, ml_n_jobs)))
 
     pool = ProcessPoolExecutor(max_workers=workers)
-    futures: Dict = {}
+    in_flight: Dict = {}  # future -> method_id; only ~workers in flight at once
     submitted_at: Dict[str, float] = {}
-    for payload in payloads:
-        submitted_at[payload["method_id"]] = time.monotonic()
-        futures[pool.submit(run_method_job, payload)] = payload["method_id"]
-
-    pending = dict(futures)
+    queued = list(payloads)  # sliding-window queue for methods not yet started
     timed_out: List[str] = []
+    pool_broken = False
+    stop = False
+
+    def _submit_next() -> bool:
+        """Queue the next method when a worker slot is free so the timeout is
+        measured from the method's actual start, not from batch start."""
+        if not queued:
+            return False
+        payload = queued.pop(0)
+        submitted_at[payload["method_id"]] = time.monotonic()
+        in_flight[pool.submit(run_method_job, payload)] = payload["method_id"]
+        return True
+
+    def _cancel_all_in_flight() -> None:
+        for f in list(in_flight):
+            f.cancel()
+        in_flight.clear()
 
     try:
-        while pending:
-            done, _ = wait(list(pending), timeout=30)
+        for _ in range(min(workers, len(queued))):
+            _submit_next()
+        if len(payloads) > workers:
+            logger.info(
+                "Bounded submission: %d workers, %d methods queued",
+                workers, len(queued),
+            )
+
+        while in_flight and not stop:
+            done, _ = wait(list(in_flight), timeout=30)
             now = time.monotonic()
+
             for future in done:
-                method_id = pending.pop(future)
+                method_id = in_flight.pop(future)
                 try:
                     m_id, status, path, error = future.result()
-                except Exception as exc:  # worker crashed / pool broke — record, keep going
+                except BrokenProcessPool as exc:
+                    # A worker died (OOM/SIGKILL/segfault). The executor then
+                    # poisons EVERY still-pending future, so stop using the
+                    # pool and finish the remaining methods sequentially.
+                    pool_broken = True
+                    m_id, status, path, error = method_id, "failed", None, (
+                        f"process pool broken (worker crashed): {exc}"
+                    )
+                    logger.error(
+                        "Worker for %s crashed — remaining methods will run sequentially: %s",
+                        method_id, error,
+                    )
+                except Exception as exc:  # per-method failure — isolation keeps the suite going
                     m_id, status, path, error = method_id, "failed", None, f"{type(exc).__name__}: {exc}"
                     logger.error("Worker for %s crashed: %s", method_id, error)
                 logger.info("Method %s finished: %s", m_id, status)
                 if not _record(m_id, status, path, error) and fail_fast:
-                    for f in pending:
-                        f.cancel()
-                    pending.clear()
+                    _cancel_all_in_flight()
+                    stop = True
                     break
 
-            # Wall-clock timeout guard: a wedged worker must not freeze the batch.
-            for future in list(pending):
-                method_id = pending[future]
+            if pool_broken:
+                # The executor has already poisoned every in-flight future with
+                # BrokenProcessPool; drain them so their exceptions are
+                # retrieved (avoids "never retrieved" warnings) and never
+                # submit new work to the broken pool.
+                for f_ in list(in_flight):
+                    m_id_ = in_flight.pop(f_)
+                    try:
+                        f_.result()
+                    except Exception as exc_:
+                        logger.error("Worker for %s crashed: %s", m_id_, exc_)
+                    if not _record(
+                        m_id_, "failed", None, "process pool broken (worker crashed)",
+                    ) and fail_fast:
+                        break
+                break
+            if stop:
+                break
+
+            # Per-method timeout guard (0 = never). Only applies to methods
+            # that are actually running, so one slow method cannot mark
+            # not-yet-started methods as failed.
+            for future in list(in_flight):
+                method_id = in_flight[future]
                 elapsed = now - submitted_at[method_id]
-                if elapsed > method_timeout:
+                if method_timeout and elapsed > method_timeout:
                     logger.error(
-                        "Method %s timed out after %.0fs — marked failed (worker may be wedged).",
+                        "Method %s timed out after %.0fs — marked failed.",
                         method_id, elapsed,
                     )
                     _record(method_id, "failed", None, f"timed out after {elapsed:.0f}s")
                     timed_out.append(method_id)
-                    pending.pop(future)
+                    in_flight.pop(future)
                     future.cancel()
                     if fail_fast:
-                        for f in pending:
-                            f.cancel()
-                        pending.clear()
+                        _cancel_all_in_flight()
+                        stop = True
                         break
+
+            # Refill the pool with queued methods (sliding window).
+            while not stop and len(in_flight) < workers:
+                if not _submit_next():
+                    break
     finally:
         # wait=False: never block on a wedged worker during teardown.
         pool.shutdown(wait=False, cancel_futures=True)
+
+    # A worker crash poisons the whole executor: complete the remaining
+    # methods in-process instead of recording them all as failed.
+    if pool_broken and queued:
+        logger.warning(
+            "Pool broken — running %d remaining method(s) sequentially.",
+            len(queued),
+        )
+        for payload in queued:
+            method_id = payload["method_id"]
+            spec = METHOD_REGISTRY[method_id]
+            logger.info("=" * 60)
+            logger.info(
+                "Method: %s [%s] — %s (sequential fallback)",
+                spec.display_name,
+                spec.category.value,
+                spec.description,
+            )
+            try:
+                m_id, status, path, error = run_method_job(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                m_id, status, path, error = (
+                    method_id, "failed", None, f"{type(exc).__name__}: {exc}",
+                )
+            logger.info("Method %s finished: %s", m_id, status)
+            if not _record(m_id, status, path, error) and fail_fast:
+                break
+    elif queued:
+        logger.info("%d queued method(s) not run (fail-fast).", len(queued))
 
     if timed_out:
         logger.warning("Timed-out methods: %s", ", ".join(sorted(timed_out)))

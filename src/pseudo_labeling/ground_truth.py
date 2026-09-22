@@ -62,6 +62,44 @@ DEFAULT_EVAL_DROP_COLUMNS: List[str] = [
     "sample_id",
     "BatchId",
     "Batch",
+    # Non-protein observation / QC columns that survive the ETL in some
+    # datasets (CRC_TMA ``additional_obs`` + derived ids, IMMUcan morphology /
+    # acquisition flags). All of these must NEVER enter k-fold feature matrices
+    # or model inputs; they are neither markers nor legitimate features.
+    "Region",
+    "groups",
+    "spots",
+    "neighborhood10",
+    "neighborhood name",
+    "ClusterID",
+    "Profile_Homogeneity:Fiter1",
+    "area",
+    "minor_axis_length",
+    "acquisition_id",
+    "SlideId",
+    "Study",
+    "Box.Description",
+    "Position",
+    "SampleId",
+    "Indication",
+    "SubBatchId",
+    "ROI",
+    "ROIonSlide",
+    "includeImage",
+    "flag_no_cells",
+    "flag_no_ROI",
+    "flag_total_area",
+    "flag_percent_covered",
+    "small_cell",
+    "flag_tumor",
+    "PD1_pos",
+    "Ki67_pos",
+    "cleavedPARP_pos",
+    "GrzB_pos",
+    "tumor_patches",
+    "distToCells",
+    "CD20_patches",
+    "Unnamed: 0",
 ]
 
 
@@ -206,7 +244,7 @@ def build_feature_matrix(
             )
         cols = [c for c in present if c not in to_drop]
     else:
-        ignore = set(to_drop) | set(STANDARD_METADATA_COLUMNS) | {"csv", "orig.ident"}
+        ignore = set(to_drop) | set(DEFAULT_EVAL_DROP_COLUMNS) | {"csv", "orig.ident"}
         cols = [
             c
             for c in feature.columns
@@ -231,25 +269,73 @@ def get_marker_columns(config: Dict[str, Any]) -> List[str]:
     return [_clean_marker_name(m) for m in raw_markers]
 
 
+# ETL channel harmonization usually strips ``:Cyc_N_ch_M`` suffixes and may
+# also shorten the display name itself (e.g. ``Cytokeratin - epithelia`` →
+# ``PanCK``, ``aSMA - smooth muscle`` → ``SMA``, ``HLA-DR - MHC-II`` →
+# ``HLADR``). Token stripping + removing punctuation/case covers the common
+# renames; ``_MARKER_ALIASES`` covers the remainder where the token itself
+# changed.
+_MARKER_ALIASES = {
+    "asma": "sma",
+    "cytokeratin": "panck",
+}
+
+
+def _normalize_marker_token(raw: str) -> str:
+    """Normalise a marker name for fuzzy matching against processed columns."""
+    token = _CYC_SUFFIX_RE.sub("", raw).strip()
+    token = token.split(" - ", 1)[0].strip()
+    return re.sub(r"[^A-Za-z0-9]", "", token).lower()
+
+
+def _marker_candidate_columns(sample: pd.DataFrame) -> List[str]:
+    """Columns that can be treated as protein markers (never metadata/labels)."""
+    drop = set(DEFAULT_EVAL_DROP_COLUMNS) | set(LABEL_COLUMNS) | {"encoded_phenotype"}
+    return [c for c in sample.columns if c not in drop]
+
+
+def _resolve_markers_in_sample(
+    sample: pd.DataFrame,
+    configured_markers: List[str],
+) -> List[str]:
+    """Map configured marker names onto the real column names in a quant head."""
+    by_token: Dict[str, str] = {}
+    for col in _marker_candidate_columns(sample):
+        token = _normalize_marker_token(col)
+        if token and token not in by_token:
+            by_token[token] = col
+
+    resolved: List[str] = []
+    for m in configured_markers:
+        token = _normalize_marker_token(m)
+        col = by_token.get(_MARKER_ALIASES.get(token, token))
+        if col is not None and col not in resolved:
+            resolved.append(col)
+    return resolved
+
+
 def resolve_markers_in_quant(
     quant_path: Path,
     configured_markers: List[str],
 ) -> List[str]:
-    """Return marker columns that exist in a processed quantification CSV.
+    """Return marker columns (real CSV names) that exist in a quant CSV.
 
-    ETL channel harmonization may shorten names (e.g. ``CD20 - B cells`` → ``CD20``),
-    so we fall back to numeric feature columns when exact names are absent.
+    ETL channel harmonization may shorten/re-rename channels (e.g.
+    ``CD20 - B cells`` → ``CD20``, ``Cytokeratin - epithelia`` → ``PanCK``), so
+    each configured name is matched case-/punctuation-insensitively (plus a
+    small alias table) against the quant header. When no configured marker
+    resolves at all, the numeric columns inside the marker block are returned
+    as a last resort.
     """
     sample = pd.read_csv(quant_path, nrows=8)
-    present = [m for m in configured_markers if m in sample.columns]
-    if present:
-        return present
+    resolved = _resolve_markers_in_sample(sample, configured_markers)
+    if resolved:
+        return resolved
 
-    drop = set(DEFAULT_EVAL_DROP_COLUMNS) | set(LABEL_COLUMNS)
     numeric = [
-        c for c in sample.columns
-        if c not in drop
-        and not c.startswith("prob_")
+        c
+        for c in _marker_candidate_columns(sample)
+        if not c.startswith("prob_")
         and pd.api.types.is_numeric_dtype(sample[c])
     ]
     if numeric:
@@ -260,12 +346,50 @@ def resolve_markers_in_quant(
     )
 
 
-def infer_separate_col(config: Dict[str, Any]) -> str:
+def resolve_split_col(
+    quant_path: Optional[Path],
+    configured_markers: List[str],
+    fallback: str = "Image_ID",
+) -> str:
+    """Return the first column after the marker block in a processed quant CSV.
+
+    Quant tables are laid out as ``[markers…, metadata…]``. The column right
+    after the last marker (usually ``Cell_ID``) is the boundary between the
+    marker block and observation columns. Hard-coding ``Image_ID`` instead
+    leaks every numeric column preceding it (e.g. ``Cell_ID``, ``Patient_ID``)
+    into the feature matrices of starling/scyan/astir.
+    """
+    if quant_path is not None and Path(quant_path).is_file():
+        sample = pd.read_csv(quant_path, nrows=8)
+        columns = list(sample.columns)
+        resolved = _resolve_markers_in_sample(sample, configured_markers)
+        if resolved:
+            positions = [columns.index(c) for c in resolved if c in columns]
+            if positions and max(positions) + 1 < len(columns):
+                return columns[max(positions) + 1]
+        for col in STANDARD_METADATA_COLUMNS:
+            if col in columns:
+                return col
+    return fallback
+
+
+def infer_separate_col(
+    config: Dict[str, Any],
+    quant_path: Optional[Path] = None,
+) -> str:
     """First metadata column after markers in the TACIT-compatible table.
 
-    After ``prepare_tacit_input`` reorders columns to ``[cell_id, markers…,
-    Image_ID, …]``, this is the column where metadata begins.
+    Without *quant_path* this is ``Image_ID`` (metadata starts there after
+    ``prepare_tacit_input`` reorders columns to ``[cell_id, markers…,
+    Image_ID, …]``, which is what the TACIT R wrapper consumes). When the
+    processed quant table is available, the split is resolved from the actual
+    header so numeric columns between the markers and ``Image_ID`` stay in the
+    metadata block instead of leaking into feature matrices.
     """
+    if quant_path is not None:
+        return resolve_split_col(
+            quant_path, get_marker_columns(config), fallback="Image_ID"
+        )
     _ = config  # reserved for dataset-specific overrides via pseudo_labeling YAML
     return "Image_ID"
 

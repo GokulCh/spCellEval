@@ -46,10 +46,14 @@ def _restrict_to_markers(data_handler, marker_columns, batch_identifier_column):
     Additional metadata / obs columns (e.g. ``neighborhood10``, ``spots``,
     ``Region``) that survive preprocessing are dropped from the fold features
     so models can never see non-protein identity or spatial-adjacency columns.
+    ``Cell_ID`` is always preserved because evaluation / spatial smoothing
+    join predictions back to the quantification table on it.
     """
     if not marker_columns:
         return
     keep = [c for c in marker_columns if c in data_handler.X.columns]
+    if "Cell_ID" in data_handler.X.columns and "Cell_ID" not in keep:
+        keep.insert(0, "Cell_ID")
     if batch_identifier_column is not None and batch_identifier_column in data_handler.X.columns:
         keep.append(batch_identifier_column)
     if not keep:
