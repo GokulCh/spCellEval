@@ -1,0 +1,35 @@
+name: spcelleval
+channels:
+  - conda-forge
+  - pytorch
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - scikit-image
+  - anndata
+  - scanpy
+  - tifffile
+  - h5py
+  - dask
+  - zarr
+  - matplotlib
+  - seaborn
+  - plotly
+  - tqdm
+  - pyyaml
+  - xgboost
+  - optuna
+  - umap-learn
+  - omegaconf
+  - safetensors
+  - jupyterlab
+  - pytorch
+  - torchvision
+  - pytorch-lightning
+  - pip:
+      - -r requirements.txt
