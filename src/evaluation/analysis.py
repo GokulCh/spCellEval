@@ -165,6 +165,16 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
     prim = {ds: _primary_split(g) for ds, g in res.groupby("dataset")}
     tabs["primary_split"] = pd.DataFrame(dict(dataset=list(prim), primary_split=list(prim.values())))
 
+    # every split side by side: 5-fold CV, 80/20 hold-out, progressive fractions, one-pass ('all') ----------------
+    sc = [c for c in ("f1_macro", "f1_weighted", "accuracy", "mcc", "sensitivity_macro", "specificity_macro", "rare_accuracy",
+                      "runtime_s") if c in ok]
+    if sc:
+        g = ok.assign(fraction=ok.fraction.fillna(-1)).groupby(["dataset", "method", "split", "fraction"])
+        bs = g[sc].mean().reset_index()
+        bs["n_runs"] = g.size().values
+        bs["fraction"] = bs.fraction.replace(-1, float("nan"))
+        tabs["by_split"] = bs.sort_values(["dataset", "method", "split", "fraction"])
+
     # failures ---------------------------------------------------------------------------------
     tabs["failures"] = (res[res.status != "ok"].groupby(["dataset", "method", "status", "error"], dropna=False)
                         .size().reset_index(name="n_runs"))

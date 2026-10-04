@@ -116,8 +116,12 @@ def test_supervised_outputs_and_analysis(full_run, data):
     assert ok[(ok.method == "random_forest") & (ok.split == "cv")].f1_macro.mean() > 0.9
     assert ok[(ok.method == "most_frequent") & (ok.split == "cv")].f1_macro.mean() < 0.3
     assert set(r[r.method == "cellsighter"].status) == {"skipped"}
-    assert set(r.split) == {"cv", "progressive", "all", "not_run"}
+    assert set(r.split) == {"cv", "holdout", "progressive", "all", "not_run"}     # --split all = 5-fold + 80/20 + progressive
     assert ok[(ok.split == "cv") & (ok.method == "xgboost")].fold.nunique() == 5
+    ho = ok[(ok.split == "holdout") & (ok.method.isin(["xgboost", "random_forest", "svm"]))]
+    assert set(ho.method) == {"xgboost", "random_forest", "svm"} and ho.n_test.between(300, 320).all()      # separate 80/20 runs
+    bs = pd.read_csv(out / "analysis" / "by_split.csv")
+    assert {"cv", "holdout", "progressive"} <= set(bs[bs.method == "random_forest"].split)
     assert not ok[ok.split == "progressive"].method.isin(["louvain", "spade", "marker_score"]).any()
     # classic ML results come straight from the repo script, in its own layout
     cdir = out / "toy" / "workspace" / "results" / "toy" / "random_forest_default_StratifiedKFold" / "level3"

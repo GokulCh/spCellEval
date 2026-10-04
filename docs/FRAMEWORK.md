@@ -8,7 +8,7 @@ The framework **orchestrates the repository's own code** and only adds what the 
 
 | Need | Repository code that is called | New code (only where nothing existed) |
 |---|---|---|
-| 5-fold CV, 80/20 hold-out, label encoding, validation split | `methods/utils/run_kfold_creator.py` -> `DataSetHandler` (hold-out = one fold of the stratified 5-fold split) | progressive 1-80 % subsampling (`preprocessing/splits.py`; repo only has the `training_amount/xgb_amount.ipynb` experiment) |
+| 5-fold CV, 80/20 hold-out, label encoding, validation split | `methods/utils/run_kfold_creator.py` -> `DataSetHandler` (the 80/20 hold-out is the first fold of the stratified 5-fold split; `--split all` runs it as its own labelled run next to the 5 CV folds and the progressive sweep) | progressive 1-80 % subsampling (`preprocessing/splits.py`; repo only has the `training_amount/xgb_amount.ipynb` experiment) |
 | Logistic regression, random forest, XGBoost, most-frequent / stratified baselines | `methods/classic_ml/run_classic_ml_default.py` (`ClassicMLDefault`) with the repo's `*_model_kwargs.json`; feature importance from the models it pickles | - |
 | Leiden, FlowSOM | `methods/leiden/run_leiden_clustering.py`, `methods/FlowSOM/run_flowsom.R` (clusters mapped to labels inside the scripts with the repo's greedy mapping) | - |
 | TACIT, Scyan, Astir, Tribus, Starling, MAPS | `run_TACIT.R`, `scyan/run_scyan.py`, `astir/run_astir.py`, `tribus/run_tribus.py`, `starling/run_starling.py`, `MAPS/run_maps.py` with the repo's bundled decision matrices / yml / xlsx | - |

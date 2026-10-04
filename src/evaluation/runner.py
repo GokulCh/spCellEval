@@ -124,7 +124,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     folds = ws_tr.folds() if ws_tr else []
     jobs: list[dict] = []
     if folds:
-        if split == "holdout":
+        if split in ("holdout", "all"):
             jobs.append(dict(split="holdout", fold=0, fraction=NAN, tr=folds[0]["train"], te=folds[0]["test"]))
         if split in ("cv", "all"):
             jobs += [dict(split="cv", fold=i, fraction=NAN, tr=f["train"], te=f["test"]) for i, f in enumerate(folds)]
