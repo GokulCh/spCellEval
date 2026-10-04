@@ -36,12 +36,22 @@ the batch continues. Missing packages / Rscript / unavailable inputs become `ski
 python cli.py                                   # guided wizard: pick stages, answer prompts, confirm, run
 python cli.py pipeline --data d.csv --stages analyze,preprocess,benchmark,visualize --methods ready
 python cli.py pipeline --config results/pipeline/pipeline_config.json   # re-run a saved configuration
+python cli.py pipeline --data raw.csv --stages convert,analyze,preprocess,benchmark,visualize   # RAW table: converted first
+python cli.py convert --data raw.csv --out results/converted    # only the conversion (src/preprocessing/datasets/process_crc_codex.py)
 python cli.py methods                           # what is runnable here, and why not
 python cli.py benchmark --data a.csv b.csv --split all --timeout 1800 --jobs 4
 python cli.py benchmark --data d.csv --mode unsupervised --marker-matrix src/methods/scyan/cHL_CODEX_decision_matrix_level3.csv
 python cli.py visualize --results results/benchmark
 python -m pytest tests -q
 ```
+**Raw tables.** The wizard detects a raw CODEX-style table (many `<marker> - ...:Cyc_<n>_ch_<n>` columns) and offers to run the
+repo's `process_crc_codex.py` first (the `convert` stage): it suggests the script's column options from the file's header
+(label, cell id, image, patient, region, x, y), you confirm or change them, and the processed
+`datasets/<name>/quantification/processed/<name>_quantification.csv` feeds the later stages. The converter applies
+arcsinh(x / cofactor) itself, so the pipeline switches its own transform to `none` to avoid transforming twice (use
+`--raw-cofactor 0` to keep raw intensities and let the pipeline transform instead). The converter needs a label column; an
+unlabeled raw table cannot be converted (run unsupervised mode on an already-processed table instead).
+
 Interpreters per method (e.g. a conda env for scyan, a custom Rscript) go in `configs/script_methods.json`.
 Keep `--out` short on Windows: the repo's classic-ML script writes files ~130 characters below it (260-character limit).
 

@@ -2,6 +2,8 @@
 
     python cli.py                       # interactive wizard (pick stages, answer prompts, confirm, run)
     python cli.py pipeline --data d.csv --stages analyze,preprocess,benchmark,visualize
+    python cli.py pipeline --data raw.csv --stages convert,analyze,benchmark,visualize    # raw CODEX table -> converted first
+    python cli.py convert --data raw.csv --out results/converted        # just the conversion (process_crc_codex.py)
     python cli.py pipeline --config results/pipeline/pipeline_config.json     # re-run a saved configuration
     python cli.py methods               # list all methods and their availability
     python cli.py analyze    --data d.csv        # dataset report only
@@ -26,8 +28,10 @@ import traceback
 from pathlib import Path
 
 FRACTIONS = "0.01,0.05,0.10,0.25,0.50,0.80"
-STAGES = ["analyze", "preprocess", "benchmark", "visualize"]
-STAGE_HELP = {"analyze": "dataset analysis (composition, most/least common types, marker profiles, neighbourhoods)",
+STAGES = ["convert", "analyze", "preprocess", "benchmark", "visualize"]
+DEFAULT_STAGES = ["analyze", "preprocess", "benchmark", "visualize"]       # convert is only for RAW tables
+STAGE_HELP = {"convert": "convert a RAW table with the repo's process_crc_codex.py (rename markers, drop label-leaking columns, arcsinh)",
+              "analyze": "dataset analysis (composition, most/least common types, marker profiles, neighbourhoods)",
               "preprocess": "preprocessing export (transformed table + 80/20, 5-fold CV and progressive split files)",
               "benchmark": "model execution, training and multi-method benchmarking",
               "visualize": "result analysis, summary tables, insights and figures"}
@@ -73,10 +77,27 @@ def build_parser() -> argparse.ArgumentParser:
         p._subs[name] = sub.add_parser(name, **kw)
         return p._subs[name]
 
-    sp = add("pipeline", help="chain stages: analyze -> preprocess -> benchmark -> visualize")
+    def convert_args(sp):
+        sp.add_argument("--dataset-name", help="name for the converted dataset (single raw file; default: file name)")
+        for opt in ("label-column", "cell-id", "image", "patient", "region", "x", "y"):
+            sp.add_argument(f"--raw-{opt}", help=f"raw table's {opt.replace('-', ' ')} column (default: guessed from the header)")
+        sp.add_argument("--raw-cofactor", type=float, default=5.0,
+                        help="arcsinh cofactor applied by the converter (0 = keep raw intensities)")
+        sp.add_argument("--raw-marker-regex", default=r":Cyc_\d+_ch_\d+$", help="regex that identifies marker columns")
+        sp.add_argument("--raw-label-map", help="JSON {raw label: benchmark label}")
+        sp.add_argument("--raw-hierarchy", help="JSON {cell_type: [level_2, level_1]}")
+
+    sp = add("convert", help="convert a RAW quantification table with the repo's process_crc_codex.py")
+    sp.add_argument("--data", nargs="+", required=True, help="raw tables (csv/tsv/xlsx/parquet)")
+    sp.add_argument("--out", default="results/converted", help="main dir; writes datasets/<name>/quantification/processed/")
+    convert_args(sp)
+
+    sp = add("pipeline", help="chain stages: [convert ->] analyze -> preprocess -> benchmark -> visualize")
     common(sp, "all", data_required=False)
+    convert_args(sp)
     sp.set_defaults(out="results/pipeline")
-    sp.add_argument("--stages", default=",".join(STAGES), help=f"comma list from {', '.join(STAGES)}")
+    sp.add_argument("--stages", default=",".join(DEFAULT_STAGES),
+                    help=f"comma list from {', '.join(STAGES)} (add 'convert' when --data is a raw table)")
     sp.add_argument("--config", help="JSON file written by an earlier pipeline run; command-line flags override it")
     common(add("train", help="train/run selected methods on a single split"), "holdout")
     common(add("benchmark", help="multi-method benchmark (hold-out + CV + progressive)"), "all")
@@ -157,6 +178,35 @@ def cmd_methods(_) -> None:
                 print(f"  {n:<20} {m.kind:<10} {st[n]}")
 
 
+def cmd_convert(a) -> list[str]:
+    """Run the repo's process_crc_codex.py on each raw table; returns the processed quantification CSV paths."""
+    from src.preprocessing import convert as cv
+    files = a.data
+    if a.dataset_name and len(files) != 1:
+        raise ValueError("--dataset-name only applies to a single raw file")
+    out = []
+    for f in files:
+        cols = cv.header(f)
+        sug = cv.suggest(cols)
+        opts = {k: getattr(a, "raw_" + k) or sug[k] for k in cv.OPTIONS}
+        missing = [k for k, v in opts.items() if not v]
+        if missing:
+            raise ValueError(f"{Path(f).name}: cannot find the {', '.join(missing)} column(s); pass "
+                             + " ".join(f"--raw-{m.replace('_', '-')} <column>" for m in missing)
+                             + (" (the converter needs a label column; an unlabeled table cannot be converted)" if "label_column" in missing else ""))
+        bad = [f"{k}='{v}'" for k, v in opts.items() if v not in cols]
+        if bad:
+            raise ValueError(f"{Path(f).name}: column(s) not in the table: {', '.join(bad)}")
+        if cv.n_marker_columns(cols, a.raw_marker_regex) == 0:
+            raise ValueError(f"{Path(f).name}: no column matches the marker pattern '{a.raw_marker_regex}'; set --raw-marker-regex")
+        name = a.dataset_name or cv.dataset_name(f)
+        print(f"converting {Path(f).name} -> dataset '{name}'  ({', '.join(f'{k}={v}' for k, v in opts.items())})")
+        out.append(str(cv.run_converter(f, a.out, name, dict(opts, cofactor=a.raw_cofactor, marker_regex=a.raw_marker_regex,
+                                                              label_map=a.raw_label_map, hierarchy=a.raw_hierarchy))))
+    print("processed table(s): " + ", ".join(out))
+    return out
+
+
 def cmd_preprocess(a) -> None:
     from src.preprocessing import build_workspace, load_dataset, transform
     for path in a.data:
@@ -231,7 +281,15 @@ def cmd_pipeline(a) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "pipeline_config.json").write_text(json.dumps({k: v for k, v in vars(a).items() if k not in ("cmd", "config")}, indent=2))
     ns = lambda **kw: argparse.Namespace(**{**vars(a), **kw})
-    runners = {"analyze": lambda: cmd_analyze(ns()),
+
+    def convert_stage():
+        a.data = cmd_convert(ns(out=str(out / "converted")))          # later stages work on the processed tables
+        if a.raw_cofactor and a.transform != "none":
+            print(f"note: the converter already applied arcsinh(x/{a.raw_cofactor:g}); using --transform none so it is not applied twice")
+            a.transform = "none"
+
+    runners = {"convert": convert_stage,
+               "analyze": lambda: cmd_analyze(ns()),
                "preprocess": lambda: cmd_preprocess(ns(out=str(out / "preprocessed"))),
                "benchmark": lambda: cmd_run(ns(no_plots=True)),
                "visualize": lambda: cmd_visualize(ns(results=str(out)))}
@@ -240,6 +298,9 @@ def cmd_pipeline(a) -> None:
         print(f"\n===== stage: {s} - {STAGE_HELP[s]} =====")
         if s == "visualize" and "benchmark" in failed:
             report.append((s, "skipped (benchmark failed)", 0.0))
+            continue
+        if s in ("analyze", "preprocess", "benchmark") and "convert" in failed:
+            report.append((s, "skipped (convert failed)", 0.0))
             continue
         t0 = time.perf_counter()
         try:
@@ -342,17 +403,19 @@ def wizard() -> list[str]:
 
     def stagesv(s):
         if s.lower() == "all":
-            return STAGES[:]
+            return DEFAULT_STAGES[:]                                   # convert is offered below when the data looks raw
         try:
             sel = [STAGES[int(x) - 1] if x.strip().isdigit() else x.strip() for x in s.split(",") if x.strip()]
         except IndexError:
-            raise ValueError("stage numbers are 1-4")
+            raise ValueError(f"stage numbers are 1-{len(STAGES)}")
         if not sel or any(x not in STAGES for x in sel):
-            raise ValueError(f"choose numbers 1-4, names or 'all' (e.g. 1,3,4)")
+            raise ValueError(f"choose numbers 1-{len(STAGES)}, names or 'all' (e.g. 2,4,5)")
         return [x for x in STAGES if x in sel]
-    stages = ask("Which stages to run (comma-separated numbers, or 'all')", "all", stagesv)
+    stages = ask("Which stages to run (comma-separated numbers, or 'all' = everything except convert)", "all", stagesv)
     argv = ["pipeline", "--stages", ",".join(stages)]
     need_data = any(s != "visualize" for s in stages)
+    from src.preprocessing import convert as cv
+    converted_names: list[str] = []
 
     def datav(s):
         files = expand_data(s)
@@ -365,11 +428,58 @@ def wizard() -> list[str]:
         for f in files:
             print(f"  {Path(f).name}: {peek(f)}")
         argv += ["--data", *files]
+        # ---- raw table? offer the repo's process_crc_codex.py
+        raw_like = [f for f in files if f.lower().endswith((".csv", ".tsv", ".txt", ".xlsx", ".xls", ".parquet"))
+                    and cv.looks_raw(cv.header(f))]
+        do_convert = "convert" in stages
+        if not do_convert and raw_like:
+            print(f"\n  {', '.join(Path(f).name for f in raw_like)} looks like a RAW table "
+                  f"({cv.n_marker_columns(cv.header(raw_like[0]))} columns match the '<marker> - ...:Cyc_<n>_ch_<n>' pattern).")
+            print("  The pipeline needs the processed format (markers first, then image, cell_id, x, y, cell_type).")
+            do_convert = yes_no("Convert it first with the repo's process_crc_codex.py?", True)
+        cof = 0.0
+        if do_convert:
+            stages = [s for s in STAGES if s in set(stages) | {"convert"}]
+            argv[2] = ",".join(stages)
+            cols, sug = cv.header(files[0]), cv.suggest(cv.header(files[0]))
+            if len(files) == 1:
+                nm = ask("\nName for the converted dataset", cv.dataset_name(files[0]))
+                argv += ["--dataset-name", nm]
+                converted_names = [nm]
+            else:
+                converted_names = [cv.dataset_name(f) for f in files]
+            print("\nMap the raw table's columns (Enter accepts the suggestion):")
+            for opt, label in (("label_column", "cell-type label"), ("cell_id", "cell id"), ("image", "image / sample"),
+                               ("patient", "patient"), ("region", "region"), ("x", "x coordinate"), ("y", "y coordinate")):
+                def vcol(s):
+                    if s not in cols:
+                        raise ValueError(f"'{s}' is not a column of {Path(files[0]).name}")
+                    return s
+                argv += [f"--raw-{opt.replace('_', '-')}", ask(f"  {label} column", sug[opt] or "", vcol)]
+
+            def regv(s):
+                n = cv.n_marker_columns(cols, s)
+                if n == 0:
+                    raise ValueError("no column matches this pattern")
+                print(f"    -> {n} marker columns")
+                return s
+            argv += ["--raw-marker-regex", ask("  regex identifying marker columns", cv.DEFAULT_REGEX, regv)]
+            cof = ask("  arcsinh cofactor applied by the converter (0 = keep raw intensities)", "5", _number(float, 0))
+            argv += ["--raw-cofactor", str(cof)]
+            for flag, label in (("--raw-label-map", "label-map JSON {raw label: benchmark label}"),
+                                ("--raw-hierarchy", "hierarchy JSON {cell_type: [level_2, level_1]}")):
+                v = ask(f"  {label} (blank = none)", "", lambda s: s if (not s or Path(s).is_file()) else (_ for _ in ()).throw(ValueError("file not found")))
+                if v:
+                    argv += [flag, v]
         argv += ["--modality", choose("Data modality", MODALITIES, "codex"),
                  "--level", choose("Cell-type granularity to train/evaluate at", ["level3", "level2", "level1"], "level3",
                                    {"level3": "finest (subtypes)", "level1": "coarsest"})]
-        tr = choose("Transform", ["auto", "arcsinh", "log1p", "none"], "auto",
-                    {"auto": "arcsinh for protein, log1p for RNA"})
+        if do_convert and cof > 0:
+            tr = "none"
+            print(f"\nTransform: none (the converter already applied arcsinh(x/{cof:g}), so it is not applied again)")
+        else:
+            tr = choose("Transform", ["auto", "arcsinh", "log1p", "none"], "auto",
+                        {"auto": "arcsinh for protein, log1p for RNA"})
         argv += ["--transform", tr]
         if tr in ("auto", "arcsinh"):
             argv += ["--cofactor", str(ask("arcsinh cofactor", "5", _number(float, 1e-9)))]
@@ -404,9 +514,10 @@ def wizard() -> list[str]:
                 argv += ["--fractions", ask("Training fractions", FRACTIONS, fracv)]
         else:
             from src.models.marker import find_marker_matrix
-            auto = [find_marker_matrix(Path(f).stem.replace("_quantification", ""), "level3") for f in files]
+            names = converted_names or [Path(f).stem.replace("_quantification", "") for f in files]
+            auto = [find_marker_matrix(nm, "level3") for nm in names]
             if any(auto):
-                print("  bundled marker matrices found for: " + ", ".join(Path(f).name for f, m in zip(files, auto) if m))
+                print("  bundled marker matrices found for: " + ", ".join(nm for nm, m in zip(names, auto) if m))
 
             def mmv(s):
                 if s and not Path(s).is_file():
@@ -472,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 0
         {"methods": cmd_methods, "preprocess": cmd_preprocess, "train": cmd_run, "benchmark": cmd_run,
-         "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline}[a.cmd](a)
+         "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline, "convert": cmd_convert}[a.cmd](a)
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return 130

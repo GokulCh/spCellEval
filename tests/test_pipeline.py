@@ -333,3 +333,68 @@ def test_wizard_menu_and_cancel(monkeypatch, capsys):
     assert cli.main([]) == 0 and "Tier 1" in capsys.readouterr().out
     monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     assert cli.main([]) == 130
+
+
+# ------------------------------------------------------------------ raw table conversion (repo's process_crc_codex.py)
+@pytest.fixture(scope="module")
+def raw_table(data, tmp_path_factory):
+    d = pd.read_csv(data[0])
+    raw = pd.DataFrame({f"{m} - marker:Cyc_{i + 2}_ch_{i + 1}": d[m] * 10 for i, m in enumerate(MARKERS)})
+    raw["HOECHST1:Cyc_1_ch_1"] = 5.0                                     # nuclear stain: must be dropped
+    raw["CellID"], raw["File Name"] = np.arange(len(d)), d.image
+    raw["patients"], raw["Region"] = d.image.map({"i1": "P1", "i2": "P2"}), "R1"
+    raw["X"], raw["Y"], raw["ClusterName"] = d.x, d.y, d.cell_type
+    raw["neighborhood"] = d.cell_type.astype("category").cat.codes       # label-derived: must not become a feature
+    p = tmp_path_factory.mktemp("raw") / "TOY_expression.csv"
+    raw.to_csv(p, index=False)
+    return p
+
+
+def test_convert_command_uses_repo_converter(raw_table, tmp_path):
+    assert cli.main(["convert", "--data", str(raw_table), "--out", str(tmp_path)]) == 0
+    out = tmp_path / "datasets" / "TOY" / "quantification" / "processed" / "TOY_quantification.csv"
+    c = pd.read_csv(out)
+    assert list(c.columns[:len(MARKERS)]) == MARKERS and {"image", "cell_id", "x", "y", "cell_type"} <= set(c.columns)
+    assert "neighborhood" not in c and not any("HOECHST" in x for x in c.columns)      # leakage / stains dropped
+    assert c.CD68.max() < 15                                                           # arcsinh(x / 5) applied by the converter
+    assert (tmp_path / "datasets" / "TOY" / "quantification" / "processed" / "markers.txt").exists()
+    assert cli.main(["convert", "--data", str(raw_table), "--out", str(tmp_path), "--raw-x", "nope"]) == 2   # bad column -> clear error
+
+
+def test_pipeline_convert_stage_then_benchmark(raw_table, tmp_path, capsys):
+    out = tmp_path / "p"
+    assert cli.main(["pipeline", "--data", str(raw_table), "--out", str(out), "--stages", "convert,analyze,benchmark",
+                     "--methods", "svm,most_frequent", "--split", "holdout"]) == 0
+    txt = capsys.readouterr().out
+    assert "stage: convert" in txt and "not applied twice" in txt and "FAILED" not in txt
+    assert (out / "converted" / "datasets" / "TOY" / "quantification" / "processed" / "TOY_quantification.csv").exists()
+    r = pd.read_csv(out / "benchmark_results.csv")
+    assert set(r.dataset) == {"TOY"} and r[r.method == "svm"].f1_macro.iloc[0] > 0.9
+    # an unconvertible raw table fails the convert stage and the dependent stages are skipped, not crashed
+    bad = tmp_path / "bad.csv"
+    pd.DataFrame({"a": [1, 2], "b": [3, 4]}).to_csv(bad, index=False)
+    with pytest.raises(SystemExit):
+        cli.main(["pipeline", "--data", str(bad), "--out", str(tmp_path / "q"), "--stages", "convert,analyze"])
+    assert "skipped (convert failed)" in capsys.readouterr().out
+
+
+def test_wizard_offers_conversion_for_raw_table(raw_table, tmp_path, monkeypatch, capsys):
+    out = tmp_path / "w"
+    answers = ["1", "",                                   # run pipeline, all stages
+               str(raw_table),
+               "",                                        # 'Convert it first?' -> yes (default)
+               "",                                        # dataset name
+               "", "", "", "", "", "", "",                # label, cell id, image, patient, region, x, y (suggested)
+               "", "",                                    # marker regex, cofactor
+               "", "",                                    # label-map, hierarchy
+               "", "",                                    # modality, level  (transform prompt is skipped)
+               "", "",                                    # normalize, batch correction
+               str(out),
+               "", "1", "", "svm", "", "1", "0", "", "", "", "", "",    # mode, holdout, fold method, methods, vote, device, timeout, jobs, cells, runs, seed, confirm
+               ]
+    feed(monkeypatch, answers)
+    assert cli.main([]) == 0
+    txt = capsys.readouterr().out
+    assert "looks like a RAW table" in txt and "Transform: none" in txt and "stage: convert" in txt and "FAILED" not in txt
+    assert (out / "converted" / "datasets" / "TOY" / "quantification" / "processed" / "TOY_quantification.csv").exists()
+    assert set(pd.read_csv(out / "benchmark_results.csv").method) == {"svm"}
