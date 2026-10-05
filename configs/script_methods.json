@@ -1,3 +1,4 @@
 {
-  "_comment": "Optional per-method interpreter overrides, e.g. \"scyan\": {\"python\": \"C:/envs/scyan/python.exe\"}, \"tacit\": {\"Rscript\": \"C:/R/bin/Rscript.exe\"}"
+  "_comment": "Optional per-method interpreter overrides, e.g. \"scyan\": {\"python\": \"C:/envs/scyan/python.exe\"}, \"tacit\": {\"Rscript\": \"C:/R/bin/Rscript.exe\"}",
+  "starling": {"python": "/lustre/home/chaluvadig/anaconda3/envs/starling/bin/python"}
 }

@@ -28,7 +28,7 @@ Napari-based QC notebooks additionally need `napari`, `magicgui`, `qtpy`.
 | VirTues | `virtues`, `lightning_fabric` |
 | MAPS | `maps` |
 | TRIBUS | `tribus` |
-| STARLING | `starling` |
+| STARLING | `biostarling` (NOT `starling`, an unrelated package; pins numpy<2) |
 | scyan | `scyan` |
 | astir | `astir` |
 | Nimbus | `nimbus_inference`, `alpineer` |
