@@ -362,6 +362,29 @@ def test_splits_only_stage_and_relative_out_path(data, tmp_path, monkeypatch):
     assert (r.status == "ok").all() and r.f1_macro.iloc[0] > 0.9
 
 
+@needs_xgb
+def test_benchmark_reuses_existing_folds_and_rebuilds_when_settings_differ(data, tmp_path, capsys):
+    common = ["--data", str(data[0]), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv"]
+    # preprocess + benchmark in one pipeline: folds are created once, then linked
+    assert cli.main(["pipeline", *common, "--stages", "preprocess,benchmark", "--out", str(tmp_path / "a")]) == 0
+    txt = capsys.readouterr().out
+    assert txt.count("5 folds created") == 1 and "reusing the folds already created" in txt
+    k = tmp_path / "a" / "toy" / "workspace" / "datasets" / "toy" / "quantification" / "processed" / "kfolds_StratifiedKFold_level3"
+    assert (k / "fold_3_test.csv").read_text() == (tmp_path / "a" / "preprocessed" / "toy" / "workspace" / "datasets" / "toy"
+                                                    / "quantification" / "processed" / "kfolds_StratifiedKFold_level3" / "fold_3_test.csv").read_text()
+    r = pd.read_csv(tmp_path / "a" / "benchmark_results.csv")
+    assert (r.status == "ok").all() and set(r.method) == {"svm", "random_forest"}
+    # a later, separate benchmark can point at the exported splits
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots",
+                     "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
+    assert "reusing the folds already created" in capsys.readouterr().out
+    # different seed -> fingerprint differs -> new folds, said out loud
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "c"), "--no-plots", "--seed", "7",
+                     "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
+    txt = capsys.readouterr().out
+    assert "do not match this run (seed differ)" in txt and "5 folds created" in txt
+
+
 # ------------------------------------------------------------------ raw table conversion (repo's process_crc_codex.py)
 @pytest.fixture(scope="module")
 def raw_table(data, tmp_path_factory):

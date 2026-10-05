@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--kfold-method", choices=["StratifiedKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
                         default="StratifiedKFold", help="fold method of the repo's DataSetHandler")
         sp.add_argument("--fractions", default=FRACTIONS, help="progressive training fractions of the dataset")
+        sp.add_argument("--splits-dir", help="reuse folds from an earlier `preprocess` run (its --out/preprocessed folder); "
+                                             "used only if the data, labels and split settings match")
         sp.add_argument("--script-runs", type=int, default=1, help="repeats for repo scripts that support n_runs (stability needs > 1)")
         sp.add_argument("--modality", choices=MODALITIES, default="codex")
         sp.add_argument("--transform", choices=["auto", "arcsinh", "log1p", "none"], default="auto")
@@ -275,7 +277,7 @@ def cmd_run(a) -> None:
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
         level=a.level, marker_matrix=a.marker_matrix, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
-        device=a.device, seed=a.seed, k_neighbors=a.k_neighbors)
+        device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None))
     res = run_benchmark(cfg)
     if res.empty:
         raise RuntimeError("no results produced - see benchmark.log")
@@ -320,7 +322,8 @@ def cmd_pipeline(a) -> None:
     runners = {"convert": convert_stage,
                "analyze": lambda: cmd_analyze(ns()),
                "preprocess": lambda: cmd_preprocess(ns(out=str(out / "preprocessed"))),
-               "benchmark": lambda: cmd_run(ns(no_plots=True)),
+               "benchmark": lambda: cmd_run(ns(no_plots=True, splits_dir=a.splits_dir or (
+                   str(out / "preprocessed") if "preprocess" in stages and "preprocess" not in failed else None))),
                "visualize": lambda: cmd_visualize(ns(results=str(out)))}
     report, failed = [], set()
     for s in stages:
@@ -525,6 +528,11 @@ def wizard() -> list[str]:
                       {"supervised": "train/val/test splits, 5-fold CV, progressive subsampling",
                        "unsupervised": "clustering + marker pseudo-labels, QC metrics without ground truth"})
         argv += ["--mode", mode]
+        if mode == "supervised" and "preprocess" not in stages:
+            sd = ask("Reuse splits from an earlier preprocess run? Folder (its <out>/preprocessed; blank = create new)", "",
+                     lambda s: s if (not s or Path(s).is_dir()) else (_ for _ in ()).throw(ValueError("folder not found")))
+            if sd:
+                argv += ["--splits-dir", sd]
         if mode == "supervised":
             split = choose("Split strategy", ["holdout", "cv", "progressive", "all"], "all",
                            {"holdout": "stratified 80/20 (= one fold of the 5-fold split)", "cv": "5-fold cross-validation",

@@ -94,3 +94,10 @@ scANVI, scArches; the adapters pass them the arguments their own CLIs define and
 they are untested. Nothing has been run on the real benchmark datasets. `--device gpu` has never run.
 Known limits: runtime for classic ML is the script's own fit+predict time; Harmony batch correction is not wired; the R
 `funky_heatmap.R` is fed via `funky_heatmap_input.csv` but not run.
+
+## Reusing splits
+
+`--stages preprocess,benchmark` creates the folds once: the benchmark links the files the preprocess stage wrote (symlinks,
+copy fallback). A standalone benchmark can do the same with `--splits-dir <out>/preprocessed`. Reuse happens only if a
+fingerprint of the data values, labels, seed, fold method, fold count and validation fraction matches; otherwise the reason is
+printed (for example `seed differ`) and new folds are created.

@@ -11,6 +11,9 @@ loaded dataset) so predictions written by any script can be mapped back to the i
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +36,8 @@ class Workspace:
     markers: list[str]
     n_rows: int
     has_folds: bool
+    reused: bool = False                      # folds were linked from an earlier run (see build_workspace reuse_from)
+    reuse_src: Path | None = None
 
     @property
     def dataset_dir(self) -> Path:            # what run_classic_ml_default.py calls --dataset_path
@@ -73,17 +78,62 @@ class Workspace:
         return out
 
 
+def _link(src: Path, dst: Path) -> None:
+    """Symlink (cheap, read-only use) with a copy fallback where symlinks are unavailable."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        shutil.copy2(src, dst)
+
+
+def _link_tree(src: Path, dst: Path) -> None:
+    for f in src.rglob("*"):
+        if f.is_file():
+            _link(f, dst / f.relative_to(src))
+
+
+def fingerprint(ds: Dataset, labels, rows, level, kfold_method, seed, n_splits, val_pct) -> dict:
+    """Everything that determines the folds: data values, labels and the split settings."""
+    X = ds.X.iloc[rows]
+    h = lambda a: hashlib.md5(np.ascontiguousarray(a).tobytes()).hexdigest()
+    return dict(n_rows=int(len(rows)), markers=list(ds.markers), level=level, kfold_method=kfold_method, seed=int(seed),
+                n_splits=int(n_splits), val_pct=float(val_pct),
+                x_md5=h(pd.util.hash_pandas_object(X, index=False).values),
+                labels_md5=h(pd.util.hash_array(np.asarray(labels)[rows].astype(str))),
+                rows_md5=h(np.asarray(rows, dtype=np.int64)))
+
+
 def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, level: str = "level3",
                     kfold_method: str = "StratifiedKFold", seed: int = 0, n_splits: int = 5,
                     val_pct: float = 0.15, rows: np.ndarray | None = None, make_folds: bool = True,
-                    extra: dict[str, np.ndarray] | None = None) -> Workspace:
+                    extra: dict[str, np.ndarray] | None = None, reuse_from: str | Path | None = None) -> Workspace:
     """Write the quantification table (+ folds via the repo's ``run_fold_creation``).
 
     labels: label at ``level`` for every cell (true labels, or marker pseudo-labels in unsupervised mode).
     rows:   positions of the cells to include (default all); ``extra`` adds metadata columns (full-length arrays).
+    reuse_from: a workspace root from an earlier ``preprocess`` run. If its fingerprint (data, labels, seed, fold method,
+                folds) matches, its table, folds and labels are linked here instead of being recreated.
     """
     rows = np.arange(len(ds)) if rows is None else np.asarray(rows)
     ws = Workspace(Path(root).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), make_folds and labels is not None)
+    fp = fingerprint(ds, labels, rows, level, kfold_method, seed, n_splits, val_pct) if ws.has_folds else None
+    if reuse_from and ws.has_folds:
+        src = Workspace(Path(reuse_from).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), True)
+        fpf = src.proc / "spc_fingerprint.json"
+        if fpf.exists() and src.quant.exists() and src.kdir.exists() and src.labels.exists():
+            old = json.loads(fpf.read_text())
+            if old == fp:
+                _link_tree(src.proc, ws.proc)
+                ws.reused, ws.reuse_src = True, src.root
+                print(f"{ds.name}: reusing the folds already created in {src.root} (data, labels and settings match)")
+                return ws
+            diff = [k for k in fp if old.get(k) != fp[k]]
+            print(f"{ds.name}: splits in {src.root} do not match this run ({', '.join(diff)} differ); creating new folds")
+        else:
+            print(f"{ds.name}: no usable splits found in {src.root}; creating new folds")
     X = ds.X.iloc[rows].reset_index(drop=True)
     meta = ds.meta.iloc[rows].reset_index(drop=True).copy()
     meta = meta.drop(columns=[c for c in meta if c in ("spc_row", *LEVEL_COLUMN.values())], errors="ignore")
@@ -116,6 +166,7 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
                           drop_non_numerical=False, n_splits=n_splits, method=kfold_method,
                           group_shuffle_split_size=0.5, swap_train_test=False, random_state=seed,
                           percentage_validation=val_pct)
+        (ws.proc / "spc_fingerprint.json").write_text(json.dumps(fp))
     return ws
 
 
@@ -126,6 +177,11 @@ def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray
     """
     vroot = ws.root / "v" / name / "datasets" / ws.name      # short names: Windows MAX_PATH
     kd = vroot / "quantification" / "processed" / ws.kdir.name
+    if ws.reuse_src is not None:                             # variant already written by the earlier preprocess run?
+        done = ws.reuse_src / "v" / name
+        if (done / "datasets" / ws.name / "quantification" / "processed" / ws.kdir.name / "fold_1_train.csv").exists():
+            _link_tree(done, ws.root / "v" / name)
+            return ws.root / "v" / name
     kd.mkdir(parents=True, exist_ok=True)
     shutil.copy(ws.labels, kd.parent / ws.labels.name)
     for part in ("train", "validation", "test"):
