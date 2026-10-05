@@ -29,9 +29,8 @@ MARKERS = [m for m, _ in TYPES.values()] + ["Noise1", "Noise2"]
 CLASSIC = "logistic_regression,random_forest,xgboost,most_frequent,stratified"
 
 
-@pytest.fixture(scope="module")
-def data(tmp_path_factory):
-    d = tmp_path_factory.mktemp("d")
+def make_data(d: Path):
+    d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     rows = []
     for img in ("i1", "i2"):
@@ -52,9 +51,14 @@ def data(tmp_path_factory):
     return p, d / "matrix.csv"
 
 
+@pytest.fixture
+def data(tmp_path):
+    return make_data(tmp_path / "d")
+
+
 @pytest.fixture(scope="module")
-def full_run(data, tmp_path_factory):
-    p, mm = data
+def full_run(tmp_path_factory):
+    p, mm = make_data(tmp_path_factory.mktemp("fd"))
     out = tmp_path_factory.mktemp("o")
     assert cli.main(["benchmark", "--data", str(p), "--out", str(out), "--marker-matrix", str(mm),
                      "--methods", f"{CLASSIC},svm,louvain,spade,singler,spatial_gnn,knn_smooth,marker_score,"
@@ -315,9 +319,11 @@ def test_wizard_full_pipeline_with_reprompts(data, tmp_path, monkeypatch, capsys
     assert "does not exist" in txt and "unknown method" in txt and "Equivalent command" in txt
     assert "pipeline summary" in txt and "FAILED" not in txt
     for f in ("pipeline_config.json", "benchmark_results.csv", "analysis/insights.md",
-              "figures/performance_vs_runtime_scalability.png", "preprocessed/toy/workspace/datasets/toy/quantification/processed/labels_StratifiedKFold_level3.csv",
+              "figures/performance_vs_runtime_scalability.png",
               "toy/dataset_report/summary.json", "toy/figures/abundance_level3.png"):
         assert (out / f).exists(), f
+    assert (p.parent / "labels_StratifiedKFold_level3.csv").exists() and (p.parent / "holdout_StratifiedKFold_level3").is_dir()
+    assert not (out / "preprocessed").exists()                                    # no duplicated structure in the output folder
     r = pd.read_csv(out / "benchmark_results.csv")
     assert {"logistic_regression", "logistic_regression+vote", "svm", "svm+vote", "most_frequent"} == set(r.method)
     assert set(r.split) == {"holdout"}
@@ -342,76 +348,86 @@ def test_wizard_menu_and_cancel(monkeypatch, capsys):
     assert cli.main([]) == 130
 
 
-# ------------------------------------------------------------------ splits only / relative output paths
+# ------------------------------------------------------------------ where the splits go
+def _listing(d: Path) -> set[str]:
+    return {p.name for p in d.iterdir()}
+
+
 @needs_xgb
-def test_splits_only_stage_and_relative_out_path(data, tmp_path, monkeypatch):
+def test_splits_only_default_writes_next_to_the_data_and_nowhere_else(tmp_path, capsys):
+    csv, _ = make_data(tmp_path / "data" / "datasets" / "toy" / "quantification" / "processed")
+    proc = csv.parent
+    before, files_before = csv.read_bytes(), _listing(proc)
+    common = ["--data", str(csv), "--modality", "codex", "--fractions", "0.05,0.5"]
+    # no --out: the splits go straight into the data file's own folder; no run folder, no nested copy of the structure
+    assert cli.main(["pipeline", *common, "--stages", "preprocess"]) == 0
+    tag = "StratifiedKFold_level3"
+    assert _listing(proc) - files_before == {f"kfolds_{tag}", f"labels_{tag}.csv", f"holdout_{tag}", f"progressive_{tag}",
+                                            f"spc_fingerprint_{tag}.json"}
+    assert (proc / f"kfolds_{tag}" / "fold_5_test.csv").exists()                                  # 5-fold CV
+    assert (proc / f"holdout_{tag}" / "fold_1_test.csv").exists()                                  # 80/20 hold-out
+    small = pd.read_csv(proc / f"progressive_{tag}" / "frac_0.05" / "fold_1_train.csv")
+    big = pd.read_csv(proc / f"progressive_{tag}" / "frac_0.5" / "fold_1_train.csv")
+    assert 0 < len(small) < len(big)
+    assert csv.read_bytes() == before                                                              # the user's table is untouched
+    assert not (tmp_path / "results").exists() and _listing(tmp_path / "data" / "datasets" / "toy") == {"quantification"}
+    out = capsys.readouterr().out
+    assert out.count("5 folds created") == 1 and "splits saved next to your data" in out
+    # the same command again reuses the stored folds instead of recreating them
+    assert cli.main(["pipeline", *common, "--stages", "preprocess"]) == 0
+    out = capsys.readouterr().out
+    assert "reusing the folds already created" in out and "5 folds created" not in out
+
+
+@needs_xgb
+def test_splits_only_with_out_goes_there_flat_and_relative_out_works(data, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert cli.main(["pipeline", "--data", str(data[0]), "--out", "rel/out", "--stages", "preprocess",
-                     "--fractions", "0.05,0.5"]) == 0
-    ws = tmp_path / "rel" / "out" / "preprocessed" / "toy" / "workspace"
-    kd = "datasets/toy/quantification/processed/kfolds_StratifiedKFold_level3"
-    assert (ws / kd / "fold_5_test.csv").exists()                                # 5-fold CV
-    assert (ws / "v" / "h" / kd / "fold_1_test.csv").exists()                    # 80/20 hold-out
-    small = pd.read_csv(ws / "v" / "p0.05" / kd / "fold_1_train.csv")
-    big = pd.read_csv(ws / "v" / "p0.5" / kd / "fold_1_train.csv")
-    assert 0 < len(small) < len(big) < len(pd.read_csv(ws / kd / "fold_1_train.csv")) + 1   # progressive subsets
-    assert not (tmp_path / "rel" / "out" / "benchmark_results.csv").exists()     # no methods were run
-    # a relative --out must work with the repo's classic-ML script (it runs from its own folder)
-    assert cli.main(["benchmark", "--data", str(data[0]), "--out", "rel/o2", "--split", "holdout",
+    csv = data[0]
+    files_before = _listing(csv.parent)
+    assert cli.main(["pipeline", "--data", str(csv), "--out", "rel/splits", "--stages", "preprocess", "--fractions", "0.05"]) == 0
+    tag = "StratifiedKFold_level3"
+    got = _listing(tmp_path / "rel" / "splits")
+    assert {f"kfolds_{tag}", f"labels_{tag}.csv", f"holdout_{tag}", f"progressive_{tag}", "pipeline_config.json"} <= got
+    assert "preprocessed" not in got and "workspace" not in got                                    # no duplicated structure
+    assert (tmp_path / "rel" / "splits" / f"kfolds_{tag}" / "fold_3_train.csv").exists()
+    assert _listing(csv.parent) == files_before                                                    # nothing written next to the data
+    assert not (tmp_path / "rel" / "splits" / "benchmark_results.csv").exists()                    # no methods were run
+    # a relative --out must work with the repo's classic-ML script too (it runs from its own folder)
+    assert cli.main(["benchmark", "--data", str(csv), "--out", "rel/o2", "--split", "holdout", "--splits-dir", "rel/splits",
                      "--methods", "random_forest", "--no-plots"]) == 0
     r = pd.read_csv("rel/o2/benchmark_results.csv")
     assert (r.status == "ok").all() and r.f1_macro.iloc[0] > 0.9
 
 
 @needs_xgb
-def test_splits_live_next_to_the_data_and_are_reused(data, tmp_path, capsys):
-    main = tmp_path / "data"
-    proc = main / "datasets" / "toy" / "quantification" / "processed"
-    proc.mkdir(parents=True)
-    csv = proc / "toy_quantification.csv"
-    shutil.copy(data[0], csv)
+def test_benchmark_reuses_folds_next_to_data_and_rebuilds_when_settings_differ(data, capsys):
+    csv = data[0]
     before = csv.read_bytes()
-    common = ["--data", str(csv), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv"]
-    # 1. splits only: written into the dataset's own processed folder, the user's csv is not touched
-    assert cli.main(["pipeline", *common, "--stages", "preprocess", "--out", str(tmp_path / "out"), "--fractions", "0.05,0.5"]) == 0
-    kd = "kfolds_StratifiedKFold_level3"
-    assert (proc / kd / "fold_5_test.csv").exists() and (proc / "labels_StratifiedKFold_level3.csv").exists()
-    for v in ("h", "p0.05", "p0.5"):                                        # hold-out + progressive, next to the data too
-        assert (main / "splits" / v / "datasets" / "toy" / "quantification" / "processed" / kd / "fold_1_test.csv").exists(), v
-    assert csv.read_bytes() == before
-    assert capsys.readouterr().out.count("5 folds created") == 1
-    # 2. a later benchmark finds and reuses them
-    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots"]) == 0
-    t = capsys.readouterr().out
-    assert "reusing the folds already created" in t and "5 folds created" not in t
-    assert (pd.read_csv(tmp_path / "b" / "benchmark_results.csv").status == "ok").all()
-    # 3. different seed: mismatch is reported, the folds are replaced, the csv is still untouched
-    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "c"), "--no-plots", "--seed", "7"]) == 0
-    t = capsys.readouterr().out
-    assert "do not match this run (seed differ)" in t and "5 folds created" in t
-    assert csv.read_bytes() == before
-
-
-@needs_xgb
-def test_preprocess_then_benchmark_in_one_pipeline_creates_folds_once(data, tmp_path, capsys):
-    common = ["--data", str(data[0]), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv"]
-    assert cli.main(["pipeline", *common, "--stages", "preprocess,benchmark", "--out", str(tmp_path / "a")]) == 0
+    common = ["--data", str(csv), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv", "--no-plots"]
+    out = csv.parent / "run"
+    # preprocess + benchmark in one pipeline: the folds are created once (next to the data) and then reused
+    assert cli.main(["pipeline", *common, "--stages", "preprocess,benchmark", "--out", str(out / "a")]) == 0
     txt = capsys.readouterr().out
     assert txt.count("5 folds created") == 1 and "reusing the folds already created" in txt
-    r = pd.read_csv(tmp_path / "a" / "benchmark_results.csv")
+    assert (csv.parent / "kfolds_StratifiedKFold_level3" / "fold_1_train.csv").exists()
+    r = pd.read_csv(out / "a" / "benchmark_results.csv")
     assert (r.status == "ok").all() and set(r.method) == {"svm", "random_forest"}
-    # folds made before fingerprints existed are verified from their files instead
-    store = tmp_path / "a" / "preprocessed" / "toy" / "workspace"
-    (store / "datasets" / "toy" / "quantification" / "processed" / "spc_fingerprint_StratifiedKFold_level3.json").unlink()
-    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots", "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
-    t = capsys.readouterr().out
-    assert "older folds" in t and "verified" in t and "5 folds created" not in t
+    # a different seed: the mismatch is reported and the stored folds are replaced
+    assert cli.main(["benchmark", *common, "--out", str(out / "b"), "--seed", "7"]) == 0
+    txt = capsys.readouterr().out
+    assert "do not match this run (seed differ)" in txt and "5 folds created" in txt
+    # without a fingerprint file the folds cannot be verified, so they are rebuilt (never silently trusted)
+    (csv.parent / "spc_fingerprint_StratifiedKFold_level3.json").unlink()
+    assert cli.main(["benchmark", *common, "--out", str(out / "c"), "--seed", "7"]) == 0
+    txt = capsys.readouterr().out
+    assert "cannot be reused" in txt and "5 folds created" in txt
+    assert csv.read_bytes() == before                                                              # the user's table is untouched
 
 
 # ------------------------------------------------------------------ raw table conversion (repo's process_crc_codex.py)
 @pytest.fixture(scope="module")
-def raw_table(data, tmp_path_factory):
-    d = pd.read_csv(data[0])
+def raw_table(tmp_path_factory):
+    d = pd.read_csv(make_data(tmp_path_factory.mktemp("rd"))[0])
     raw = pd.DataFrame({f"{m} - marker:Cyc_{i + 2}_ch_{i + 1}": d[m] * 10 for i, m in enumerate(MARKERS)})
     raw["HOECHST1:Cyc_1_ch_1"] = 5.0                                     # nuclear stain: must be dropped
     raw["CellID"], raw["File Name"] = np.arange(len(d)), d.image

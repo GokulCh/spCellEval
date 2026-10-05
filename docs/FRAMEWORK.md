@@ -95,13 +95,26 @@ they are untested. Nothing has been run on the real benchmark datasets. `--devic
 Known limits: runtime for classic ML is the script's own fit+predict time; Harmony batch correction is not wired; the R
 `funky_heatmap.R` is fed via `funky_heatmap_input.csv` but not run.
 
-## Where the splits live (splits store)
+## Where the splits go
 
-If your table sits in the repo layout (`<main_dir>/datasets/<name>/quantification/processed/<name>_quantification.csv`, e.g.
-`data/datasets/crc_tma/...`), the preprocess stage writes the folds **there**, exactly where the repo's own scripts expect
-them: `kfolds_<method>_<level>/`, `labels_<method>_<level>.csv` and a small `spc_fingerprint_*.json`. Your csv is never
-modified. The 80/20 hold-out and the progressive subsets go to `<main_dir>/splits/<h|p0.01|...>/`. The benchmark stage then
-finds and reuses those folds (symlinks) as long as the data values, labels, seed, fold method, fold count and validation
-fraction match; otherwise it says what differs, creates new folds and replaces the stored ones. `--splits-dir <dir>` points
-elsewhere, `--splits-dir out` keeps everything inside `--out`. Folds from older runs without a fingerprint are verified
-against the data from their files (the seed they used cannot be checked).
+By default they go **into the folder that holds your `--data` file** (the repo's `.../quantification/processed/`), flat, with
+no copy of the folder structure:
+
+```
+processed/
+  crc_tma_quantification.csv              <- your table, never modified
+  kfolds_StratifiedKFold_level3/          <- 5-fold CV (fold_i_{train,validation,test}.csv, repo's run_kfold_creator)
+  labels_StratifiedKFold_level3.csv
+  holdout_StratifiedKFold_level3/         <- 80/20 hold-out (= fold 1)
+  progressive_StratifiedKFold_level3/frac_0.01/ ... frac_0.8/     <- progressive training subsets
+  spc_fingerprint_StratifiedKFold_level3.json
+```
+
+* `preprocess` with **no `--out`** writes only there (the working table with the extra `spc_row` column is scratch space that
+  is deleted afterwards). With **`--out DIR`** (splits-only run) the same files go flat into `DIR` instead and nothing is
+  written next to the data. `--splits-dir DIR` overrides both; `--splits-dir out` keeps the folds inside the benchmark's own workspace.
+* The benchmark stage looks in the same folder and reuses the folds (symlinks) as long as the data values, labels, seed, fold
+  method, fold count and validation fraction match; otherwise it prints what differs, creates new folds and replaces the
+  stored ones. Folds without a fingerprint file cannot be verified and are rebuilt.
+* A benchmark run keeps its own scratch workspace (`<out>/<dataset>/workspace/`) because the repo's classic-ML script needs
+  its `datasets/<name>/quantification/processed/` layout; it holds links to the folds plus that method's results.

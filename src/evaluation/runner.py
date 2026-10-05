@@ -81,7 +81,7 @@ class BenchConfig:
     n_jobs_model: int = 1
     script_runs: int = 1                   # repeats for the repo scripts that support n_runs (stability needs > 1)
     save_predictions: bool = True
-    splits_dir: str | None = None          # where the folds live: None/'auto', 'out', or a <main_dir> (see preprocessing.workspace)
+    splits_dir: str | None = None          # where the folds live: None/'auto' (next to the data file), 'out', or a folder
 
 
 def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
@@ -117,7 +117,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     lab = ds.y if sup else (pseudo if pseudo is not None else ds.y)         # labels the methods see
     conf = np.ones(n, int) if (sup or ok is None) else ok.astype(int)
     extra = {"spc_confident": conf, **({} if ds.y is None or sup else {"gt_cell_type": ds.y})}
-    store = resolve_store(cfg.splits_dir, path, ds.name, Path(cfg.out).resolve() / "preprocessed") if sup else None
+    store = resolve_store(cfg.splits_dir, path, ds.name, len(cfg.data) > 1) if sup else None
     ws_all = build_workspace(ds, lab, out_dir / "workspace", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
                              make_folds=sup, extra=extra, store=store)
     ws_tr = ws_all if sup else None

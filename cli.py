@@ -57,9 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--kfold-method", choices=["StratifiedKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
                         default="StratifiedKFold", help="fold method of the repo's DataSetHandler")
         sp.add_argument("--fractions", default=FRACTIONS, help="progressive training fractions of the dataset")
-        sp.add_argument("--splits-dir", help="where the folds live: a <main_dir> such as data/ (folds go in <main_dir>/datasets/<name>/quantification/"
-                                             "processed/, your csv is never touched). Default 'auto': next to your data when it sits in that layout. "
-                                             "'out': keep the folds inside --out only. Existing folds are reused only if data and settings match.")
+        sp.add_argument("--splits-dir", help="folder that holds the folds. Default: the folder of the --data file (its processed/ folder). "
+                                             "'out': keep them inside the run's own workspace. Existing folds are reused only if the data, "
+                                             "labels and split settings match; otherwise new ones replace them. Your csv is never modified.")
         sp.add_argument("--script-runs", type=int, default=1, help="repeats for repo scripts that support n_runs (stability needs > 1)")
         sp.add_argument("--modality", choices=MODALITIES, default="codex")
         sp.add_argument("--transform", choices=["auto", "arcsinh", "log1p", "none"], default="auto")
@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("pipeline", help="chain stages: [convert ->] analyze -> preprocess -> benchmark -> visualize")
     common(sp, "all", data_required=False)
     convert_args(sp)
-    sp.set_defaults(out="results/pipeline")
+    sp.set_defaults(out=None)                     # None: results/pipeline, or "next to the data" for a splits-only run
     sp.add_argument("--stages", default=",".join(DEFAULT_STAGES),
                     help=f"comma list from {', '.join(STAGES)} (add 'convert' when --data is a raw table)")
     sp.add_argument("--config", help="JSON file written by an earlier pipeline run; command-line flags override it")
@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("preprocess", help="load, transform, write the repo-layout table and create folds with the repo's run_kfold_creator")
     sp.add_argument("--data", nargs="+", required=True)
-    sp.add_argument("--out", default="results/preprocessed")
+    sp.add_argument("--out", default=None, help="folder for the splits (default: the folder that holds --data, i.e. processed/)")
     for a, kw in [("--modality", dict(choices=MODALITIES, default="codex")),
                   ("--transform", dict(choices=["auto", "arcsinh", "log1p", "none"], default="auto")),
                   ("--cofactor", dict(type=float, default=5.0)),
@@ -212,27 +212,40 @@ def cmd_convert(a) -> list[str]:
 
 
 def cmd_preprocess(a) -> None:
-    """Splits only: the 5 folds (repo's run_kfold_creator), the 80/20 hold-out and the progressive training subsets."""
-    from src.preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
+    """Splits only: the 5 folds (repo's run_kfold_creator), the 80/20 hold-out and the progressive training subsets.
+
+    Where they go: --splits-dir if given, else --out if given, else the folder that holds the --data file
+    (the repo's .../quantification/processed/). The data file itself is never modified.
+    """
+    import tempfile
+    from src.preprocessing import build_workspace, export_variant, load_dataset, progressive, transform
     from src.preprocessing.workspace import resolve_store
+    multi = len(a.data) > 1
     for path in a.data:
         ds = transform(load_dataset(path, modality=a.modality, level=a.level), a.transform, a.cofactor,
                        a.normalize, a.batch_correct)
-        store = resolve_store(getattr(a, "splits_dir", None), path, ds.name)
-        ws = build_workspace(ds, ds.y, Path(a.out) / ds.name / "workspace", a.level, a.kfold_method, a.seed, a.folds,
-                             make_folds=ds.y is not None, store=store)
-        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers; working table: {ws.quant}")
-        if not ws.has_folds:
+        sd = getattr(a, "splits_dir", None)
+        if sd and sd not in ("auto", "out"):
+            target = resolve_store(sd, path, ds.name, multi)
+        elif getattr(a, "out", None):
+            target = Path(a.out) / ds.name if multi else Path(a.out)
+        else:
+            target = Path(path).resolve().parent
+        if ds.y is None:
+            print(f"{ds.name}: no label column ('{a.level}'), so there is nothing to split")
             continue
-        home = store if store is not None else ws.root
-        print(f"  {a.folds}-fold CV (+ labels + validation sets, repo's run_kfold_creator): {home / 'datasets' / ds.name / 'quantification' / 'processed' / ws.kdir.name}")
-        folds = ws.folds()
-        vroot = (store / "splits") if store is not None else None
-        make_variant(ws, "h", 0, variants_root=vroot)
-        print(f"  80/20 hold-out (= fold 1): {(vroot or ws.root / 'v') / 'h'}")
-        for fr, sub in progressive(folds[0]["train"], ds.y, len(ds), [float(f) for f in a.fractions.split(",")], a.seed):
-            make_variant(ws, f"p{fr}", 0, sub, variants_root=vroot)
-            print(f"  progressive {fr:g}: {len(sub)} training cells -> {(vroot or ws.root / 'v') / f'p{fr}'}")
+        with tempfile.TemporaryDirectory(prefix="spc_split_") as tmp:     # scratch: the working table is not kept
+            ws = build_workspace(ds, ds.y, tmp, a.level, a.kfold_method, a.seed, a.folds, store=target)
+            tag = f"{ws.kfold_method}_{ws.level}"
+            folds = ws.folds()
+            export_variant(ws, target / f"holdout_{tag}", 0)
+            subsets = progressive(folds[0]["train"], ds.y, len(ds), [float(f) for f in a.fractions.split(",")], a.seed)
+            for fr, sub in subsets:
+                export_variant(ws, target / f"progressive_{tag}" / f"frac_{fr:g}", 0, sub)
+        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers. Splits are in {target}:")
+        print(f"  {a.folds}-fold CV        kfolds_{tag}/  (+ labels_{tag}.csv)")
+        print(f"  80/20 hold-out     holdout_{tag}/  (= fold 1)")
+        print("  progressive        " + ", ".join(f"progressive_{tag}/frac_{fr:g}/ ({len(sub)} train cells)" for fr, sub in subsets))
 
 
 def cmd_analyze(a) -> None:
@@ -314,10 +327,13 @@ def cmd_pipeline(a) -> None:
     needs_data = [s for s in stages if s != "visualize"]
     if needs_data and not a.data:
         raise ValueError(f"stages {needs_data} need --data")
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "pipeline_config.json").write_text(json.dumps({k: v for k, v in vars(a).items() if k not in ("cmd", "config")}, indent=2))
-    ns = lambda **kw: argparse.Namespace(**{**vars(a), **kw})
+    out_explicit = a.out is not None
+    splits_only = stages == ["preprocess"]
+    out = Path(a.out or "results/pipeline")
+    if not (splits_only and not out_explicit):          # a splits-only run without --out leaves no run artefacts
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pipeline_config.json").write_text(json.dumps({k: v for k, v in vars(a).items() if k not in ("cmd", "config")}, indent=2))
+    ns = lambda **kw: argparse.Namespace(**{**vars(a), **{"out": str(out)}, **kw})
 
     def convert_stage():
         a.data = cmd_convert(ns(out=str(out / "converted")))          # later stages work on the processed tables
@@ -327,7 +343,7 @@ def cmd_pipeline(a) -> None:
 
     runners = {"convert": convert_stage,
                "analyze": lambda: cmd_analyze(ns()),
-               "preprocess": lambda: cmd_preprocess(ns(out=str(out / "preprocessed"))),
+               "preprocess": lambda: cmd_preprocess(ns(out=str(out) if (out_explicit and "benchmark" not in stages) else None)),
                "benchmark": lambda: cmd_run(ns(no_plots=True)),
                "visualize": lambda: cmd_visualize(ns(results=str(out)))}
     report, failed = [], set()
@@ -350,7 +366,10 @@ def cmd_pipeline(a) -> None:
     print("\n===== pipeline summary =====")
     for s, st, t in report:
         print(f"  {s:<11} {st}  ({t:.1f}s)")
-    print(f"outputs: {out}   (config saved to {out / 'pipeline_config.json'})")
+    if splits_only and not out_explicit:
+        print("splits saved next to your data (see above); nothing else was written")
+    else:
+        print(f"outputs: {out}   (config saved to {out / 'pipeline_config.json'})")
     rr = out / "summary" / "run_report.txt"
     if "benchmark" in stages and rr.exists():
         print("\n" + rr.read_text(encoding="utf-8"))
@@ -525,8 +544,14 @@ def wizard() -> list[str]:
             argv += ["--cofactor", str(ask("arcsinh cofactor", "5", _number(float, 1e-9)))]
         argv += ["--normalize", choose("Per-column normalization", ["none", "zscore", "minmax", "robust"], "none"),
                  "--batch-correct", choose("Batch correction", ["none", "median"], "none", {"median": "per-image median centring"})]
-    out_default = "results/pipeline"
-    argv += ["--out", ask("\nExport directory", out_default)]
+    if stages == ["preprocess"]:
+        where = ask("\nSave the splits in (blank = next to your data file, i.e. its processed/ folder)", "")
+        if where:
+            argv += ["--out", where]
+    else:
+        if "preprocess" in stages:
+            print("\nThe splits themselves go next to your data file (its processed/ folder); the folder below holds the run's other outputs.")
+        argv += ["--out", ask("Export directory", "results/pipeline")]
 
     if "benchmark" in stages:
         mode = choose("Workflow mode", ["supervised", "unsupervised"], "supervised",
@@ -534,7 +559,7 @@ def wizard() -> list[str]:
                        "unsupervised": "clustering + marker pseudo-labels, QC metrics without ground truth"})
         argv += ["--mode", mode]
         if mode == "supervised" and "preprocess" not in stages:
-            sd = ask("Splits folder, e.g. data/ (blank = auto: next to your data if it is in data/datasets/<name>/quantification/processed)", "",
+            sd = ask("Folder holding existing splits (blank = the folder of your data file, i.e. its processed/ folder)", "",
                      lambda s: s if (not s or Path(s).is_dir()) else (_ for _ in ()).throw(ValueError("folder not found")))
             if sd:
                 argv += ["--splits-dir", sd]

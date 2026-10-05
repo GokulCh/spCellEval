@@ -9,11 +9,11 @@ Folds, label encoding and the validation split are all produced by the repositor
 (``DataSetHandler``); nothing here re-implements them. Every row carries ``spc_row`` (its position in the
 loaded dataset) so predictions written by any script can be mapped back to the in-memory matrix.
 
-Splits store. The folds can live permanently next to the data, in the repo's own ``<main_dir>/datasets/<name>/
-quantification/processed/`` (``store``). Only the fold directory, the labels file and a small fingerprint file are
-written there - the user's own ``<name>_quantification.csv`` is never touched. A run first looks for matching folds
-in the store (data values, labels, seed, fold method, fold count and validation fraction must all match) and links
-them; otherwise it creates the folds and publishes them to the store for next time.
+Splits store. The folds are kept in a plain folder (``store``) - by default the folder that holds the user's
+``--data`` file (the repo's ``.../quantification/processed/``). Only the fold directory, the labels file, the hold-out /
+progressive exports and a small fingerprint file are written there; the user's own ``<name>_quantification.csv`` is never
+touched. A run first looks for matching folds in the store (data values, labels, seed, fold method, fold count and
+validation fraction must all match) and links them; otherwise it creates the folds and publishes them to the store.
 """
 from __future__ import annotations
 
@@ -87,34 +87,35 @@ class Workspace:
         return out
 
 
+@dataclass
+class FlatStore(Workspace):
+    """A folder that holds fold files directly (no datasets/<name>/quantification/processed nesting)."""
+    flat: Path | None = None
+
+    @property
+    def proc(self) -> Path:
+        return self.flat
+
+
 # ----------------------------------------------------------------------------- splits store
-def infer_main_dir(data_path: str | Path) -> Path | None:
-    """<main_dir> if the file sits in the repo's ``<main_dir>/datasets/<name>/quantification/processed/`` layout."""
-    p = Path(data_path).resolve()
-    parts = p.parent.parts
-    if len(parts) >= 5 and parts[-1] == "processed" and parts[-2] == "quantification" and parts[-4] == "datasets":
-        return p.parents[4]
-    return None
+def resolve_store(splits_dir: str | None, data_path: str | Path, ds_name: str, multi: bool = False) -> Path | None:
+    """The folder that holds the folds.
 
-
-def resolve_store(splits_dir: str | None, data_path: str | Path, ds_name: str, fallback_root: str | Path | None = None) -> Path | None:
-    """Where the folds should live.
-
-    splits_dir: None/'auto' -> next to the data if it is in the repo layout, else a ``preprocess`` run's workspace under
-                ``fallback_root/<ds>/workspace`` if one exists; 'out' -> nowhere (folds stay inside the output folder);
-                a path -> that folder (a <main_dir>, or an older ``preprocessed`` folder holding <ds>/workspace).
+    None / 'auto' -> the folder of the data file itself (the repo's ``.../processed/``); 'out' -> nowhere (the folds stay
+    inside the run's own workspace); a path -> that folder. A path that is a <main_dir> (contains
+    datasets/<name>/quantification/processed) resolves to that processed folder. With several datasets a plain path gets a
+    ``<ds>`` sub-folder so their folds do not collide.
     """
     if splits_dir == "out":
         return None
     if splits_dir and splits_dir != "auto":
         p = Path(splits_dir).resolve()
-        return p / ds_name / "workspace" if (p / ds_name / "workspace" / "datasets").is_dir() else p
-    m = infer_main_dir(data_path)
-    if m is not None:
-        return m
-    if fallback_root is not None and (Path(fallback_root) / ds_name / "workspace" / "datasets").is_dir():
-        return (Path(fallback_root) / ds_name / "workspace").resolve()
-    return None
+        for cand in (p / "datasets" / ds_name / "quantification" / "processed",
+                     p / ds_name / "workspace" / "datasets" / ds_name / "quantification" / "processed"):
+            if cand.is_dir():
+                return cand
+        return p / ds_name if multi else p
+    return Path(data_path).resolve().parent
 
 
 def _link(src: Path, dst: Path) -> None:
@@ -216,8 +217,8 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
 
     labels: label at ``level`` for every cell (true labels, or marker pseudo-labels in unsupervised mode).
     rows:   positions of the cells to include (default all); ``extra`` adds metadata columns (full-length arrays).
-    store:  a <main_dir> holding the splits (see module docstring): matching folds are linked from it, otherwise the
-            new folds are published to it. Its own quantification table is never modified.
+    store:  a folder holding the splits (see module docstring): matching folds are linked from it, otherwise the
+            new folds are published to it. A quantification table in that folder is never modified.
     """
     rows = np.arange(len(ds)) if rows is None else np.asarray(rows)
     ws = Workspace(Path(root).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), make_folds and labels is not None)
@@ -249,8 +250,8 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
 
     fp = fingerprint(ds, labels, rows, level, kfold_method, seed, n_splits, val_pct)
     st = None
-    if store is not None and Path(store).resolve() != ws.root:
-        st = Workspace(Path(store).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), True)
+    if store is not None and Path(store).resolve() != ws.proc.resolve():
+        st = FlatStore(ws.root, ds.name, level, kfold_method, list(ds.markers), len(rows), True, flat=Path(store).resolve())
         if _try_reuse(ws, st, fp, ds, labels, rows, level, n_splits):
             return ws
     run_fold_creation = load_module(UTILS / "run_kfold_creator.py", "run_kfold_creator").run_fold_creation
@@ -262,7 +263,10 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
                       percentage_validation=val_pct)
     ws.fingerprint_file.write_text(json.dumps(fp))
     if st is not None:
-        _publish(ws, st)
+        try:
+            _publish(ws, st)
+        except OSError as e:                      # e.g. read-only data folder: keep the folds in the workspace instead
+            print(f"{ws.name}: could not save the folds in {st.proc} ({e}); they stay in {ws.kdir}")
     return ws
 
 
@@ -286,3 +290,20 @@ def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray
         else:
             shutil.copy(src, kd / f"fold_1_{part}.csv")
     return vroot.parent.parent                 # the variant root, usable as --main_dir
+
+
+def export_variant(ws: Workspace, dest: str | Path, fold: int = 0, train_rows: np.ndarray | None = None) -> Path:
+    """Write one single-fold split as plain fold files (fold_1_{train,validation,test}.csv) into ``dest``.
+
+    Used for the exported 80/20 hold-out and progressive subsets; ``train_rows`` (spc_row ids) subsamples the train file.
+    """
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    for part in ("train", "validation", "test"):
+        src = ws.kdir / f"fold_{fold + 1}_{part}.csv"
+        if part == "train" and train_rows is not None:
+            t = pd.read_csv(src)
+            t[t.spc_row.isin(train_rows)].to_csv(dest / "fold_1_train.csv", index=False)
+        else:
+            shutil.copy(src, dest / f"fold_1_{part}.csv")
+    return dest
