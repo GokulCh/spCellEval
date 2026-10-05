@@ -339,6 +339,27 @@ def test_wizard_menu_and_cancel(monkeypatch, capsys):
     assert cli.main([]) == 130
 
 
+# ------------------------------------------------------------------ splits only / relative output paths
+@needs_xgb
+def test_splits_only_stage_and_relative_out_path(data, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["pipeline", "--data", str(data[0]), "--out", "rel/out", "--stages", "preprocess",
+                     "--fractions", "0.05,0.5"]) == 0
+    ws = tmp_path / "rel" / "out" / "preprocessed" / "toy" / "workspace"
+    kd = "datasets/toy/quantification/processed/kfolds_StratifiedKFold_level3"
+    assert (ws / kd / "fold_5_test.csv").exists()                                # 5-fold CV
+    assert (ws / "v" / "h" / kd / "fold_1_test.csv").exists()                    # 80/20 hold-out
+    small = pd.read_csv(ws / "v" / "p0.05" / kd / "fold_1_train.csv")
+    big = pd.read_csv(ws / "v" / "p0.5" / kd / "fold_1_train.csv")
+    assert 0 < len(small) < len(big) < len(pd.read_csv(ws / kd / "fold_1_train.csv")) + 1   # progressive subsets
+    assert not (tmp_path / "rel" / "out" / "benchmark_results.csv").exists()     # no methods were run
+    # a relative --out must work with the repo's classic-ML script (it runs from its own folder)
+    assert cli.main(["benchmark", "--data", str(data[0]), "--out", "rel/o2", "--split", "holdout",
+                     "--methods", "random_forest", "--no-plots"]) == 0
+    r = pd.read_csv("rel/o2/benchmark_results.csv")
+    assert (r.status == "ok").all() and r.f1_macro.iloc[0] > 0.9
+
+
 # ------------------------------------------------------------------ raw table conversion (repo's process_crc_codex.py)
 @pytest.fixture(scope="module")
 def raw_table(data, tmp_path_factory):

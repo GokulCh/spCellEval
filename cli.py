@@ -32,7 +32,7 @@ STAGES = ["convert", "analyze", "preprocess", "benchmark", "visualize"]
 DEFAULT_STAGES = ["analyze", "preprocess", "benchmark", "visualize"]       # convert is only for RAW tables
 STAGE_HELP = {"convert": "convert a RAW table with the repo's process_crc_codex.py (rename markers, drop label-leaking columns, arcsinh)",
               "analyze": "dataset analysis (composition, most/least common types, marker profiles, neighbourhoods)",
-              "preprocess": "preprocessing export (transformed table + 80/20, 5-fold CV and progressive split files)",
+              "preprocess": "splits only: 5-fold CV + 80/20 hold-out + progressive training subsets, written in the repo's fold format (no methods run)",
               "benchmark": "model execution, training and multi-method benchmarking",
               "visualize": "result analysis, summary tables, insights and figures"}
 DATA_SUFFIXES = (".csv", ".tsv", ".txt", ".parquet", ".h5ad")
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
                   ("--normalize", dict(choices=["none", "zscore", "minmax", "robust"], default="none")),
                   ("--batch-correct", dict(choices=["none", "median"], default="none")),
                   ("--level", dict(choices=["level1", "level2", "level3"], default="level3")),
-                  ("--folds", dict(type=int, default=5)),
+                  ("--folds", dict(type=int, default=5)), ("--fractions", dict(default=FRACTIONS)),
                   ("--kfold-method", dict(choices=["StratifiedKFold", "StratifiedGroupKFold", "GroupShuffleSplit"], default="StratifiedKFold")),
                   ("--seed", dict(type=int, default=0))]:
         sp.add_argument(a, **kw)
@@ -208,14 +208,23 @@ def cmd_convert(a) -> list[str]:
 
 
 def cmd_preprocess(a) -> None:
-    from src.preprocessing import build_workspace, load_dataset, transform
+    """Splits only: the 5 folds (repo's run_kfold_creator), the 80/20 hold-out and the progressive training subsets."""
+    from src.preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
     for path in a.data:
         ds = transform(load_dataset(path, modality=a.modality, level=a.level), a.transform, a.cofactor,
                        a.normalize, a.batch_correct)
         ws = build_workspace(ds, ds.y, Path(a.out) / ds.name / "workspace", a.level, a.kfold_method, a.seed, a.folds,
                              make_folds=ds.y is not None)
-        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers -> {ws.proc}"
-              + (f"\n  folds + labels + validation sets (repo's run_kfold_creator): {ws.kdir.name}" if ws.has_folds else ""))
+        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers -> {ws.proc}")
+        if not ws.has_folds:
+            continue
+        print(f"  {a.folds}-fold CV (+ labels + validation sets, repo's run_kfold_creator): {ws.kdir.name}")
+        folds = ws.folds()
+        make_variant(ws, "h", 0)
+        print(f"  80/20 hold-out (= fold 1): {ws.root / 'v' / 'h'}")
+        for fr, sub in progressive(folds[0]["train"], ds.y, len(ds), [float(f) for f in a.fractions.split(",")], a.seed):
+            make_variant(ws, f"p{fr}", 0, sub)
+            print(f"  progressive {fr:g}: {len(sub)} training cells -> {ws.root / 'v' / f'p{fr}'}")
 
 
 def cmd_analyze(a) -> None:

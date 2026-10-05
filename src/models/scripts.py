@@ -185,8 +185,8 @@ def _run(cmd: list[str], cwd: Path, timeout: float) -> dict:
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None)
         if p.returncode:
-            tail = (p.stderr or p.stdout).strip().splitlines()[-1:] or [""]
-            out.update(status=_fail_status(p.returncode), error=f"exit {p.returncode}: {tail[0][:250]}")
+            lines = [l.strip() for l in (p.stderr or p.stdout).splitlines() if l.strip()]
+            out.update(status=_fail_status(p.returncode), error=f"exit {p.returncode}: " + " | ".join(lines[-4:])[:450])
     except subprocess.TimeoutExpired:
         out.update(status="timeout", error=f"exceeded {timeout:.0f}s")
     except FileNotFoundError as e:

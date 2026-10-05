@@ -83,7 +83,7 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
     rows:   positions of the cells to include (default all); ``extra`` adds metadata columns (full-length arrays).
     """
     rows = np.arange(len(ds)) if rows is None else np.asarray(rows)
-    ws = Workspace(Path(root), ds.name, level, kfold_method, list(ds.markers), len(rows), make_folds and labels is not None)
+    ws = Workspace(Path(root).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), make_folds and labels is not None)
     X = ds.X.iloc[rows].reset_index(drop=True)
     meta = ds.meta.iloc[rows].reset_index(drop=True).copy()
     meta = meta.drop(columns=[c for c in meta if c in ("spc_row", *LEVEL_COLUMN.values())], errors="ignore")

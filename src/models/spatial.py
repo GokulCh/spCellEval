@@ -1,6 +1,8 @@
 """Tier 4 - spatial / graph-aware methods and spatial post-processing."""
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from scipy.sparse import csr_matrix, identity
 from sklearn.ensemble import RandomForestClassifier
@@ -9,7 +11,11 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from sklearn.exceptions import ConvergenceWarning
+
 from .base import Result, Task, register
+
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
 from .traditional import _need_labels
 
 

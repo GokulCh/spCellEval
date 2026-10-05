@@ -106,7 +106,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     if not sup and pseudo is None and ds.y is None:
         raise ValueError(f"{ds.name}: unsupervised mode needs a marker decision matrix (--marker-matrix) or a label column")
 
-    out_dir = Path(cfg.out) / ds.name
+    out_dir = (Path(cfg.out) / ds.name).resolve()      # absolute: the repo scripts run from their own folders
     out_dir.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and len(str(out_dir.resolve())) > 110:
         log.warning("output path is long (%d chars); the repo's classic-ML script writes files ~130 chars deeper and "
@@ -189,7 +189,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     def emit(name, impl, tier, split_, fold, fraction, run, df, imp, pred_file, n_train=NAN):
         key = dict(dataset=ds.name, method=name, split=split_, fold=fold, fraction=fraction)
         row = dict(**key, tier=tier, mode=cfg.mode, impl=impl, n_train=n_train, n_test=NAN if df is None else len(df),
-                   status=run["status"], error=(run.get("error") or "").strip().splitlines()[-1][:300] if run.get("error") else "",
+                   status=run["status"], error=(run.get("error") or "").strip().splitlines()[-1][:500] if run.get("error") else "",
                    runtime_s=run.get("runtime_s", NAN), mem_mb=run.get("mem_mb"), device=device, pred_file=pred_file or "")
         lv_rows, cl_rows = [], []
         if df is not None and run["status"] == "ok":
