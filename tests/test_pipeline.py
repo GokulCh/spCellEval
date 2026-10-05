@@ -116,6 +116,8 @@ def test_supervised_outputs_and_analysis(full_run, data):
     assert ok[(ok.method == "random_forest") & (ok.split == "cv")].f1_macro.mean() > 0.9
     assert ok[(ok.method == "most_frequent") & (ok.split == "cv")].f1_macro.mean() < 0.3
     assert set(r[r.method == "cellsighter"].status) == {"skipped"}
+    rep = (out / "summary" / "run_report.txt").read_text()                      # per-method outcome report
+    assert rep.startswith("METHOD REPORT") and "cellsighter" in rep and "SKIPPED" in rep and "random_forest" in rep
     assert set(r.split) == {"cv", "holdout", "progressive", "all", "not_run"}     # --split all = 5-fold + 80/20 + progressive
     assert ok[(ok.split == "cv") & (ok.method == "xgboost")].fold.nunique() == 5
     ho = ok[(ok.split == "holdout") & (ok.method.isin(["xgboost", "random_forest", "svm"]))]

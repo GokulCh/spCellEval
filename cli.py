@@ -243,6 +243,25 @@ def cmd_analyze(a) -> None:
         print(f"tables/figures in {rep.parent}")
 
 
+def run_report(res, out: Path) -> str:
+    """Per-method outcome table (ok / failed / timeout / oom / skipped runs) with the first error, saved and printed."""
+    cols = ["ok", "failed", "timeout", "oom", "skipped"]
+    t = res.groupby(["method", "status"]).size().unstack(fill_value=0).reindex(columns=cols, fill_value=0)
+    t.insert(0, "outcome", ["OK" if r.failed + r.timeout + r.oom + r.skipped == 0 else
+                            ("FAILED" if r.ok == 0 and r.skipped == 0 else "SKIPPED" if r.ok == 0 else "PARTIAL")
+                            for r in t.itertuples()])
+    err = res[res.status != "ok"].dropna(subset=["error"]).groupby("method").error.first()
+    t["first_problem"] = t.index.map(lambda m: str(err.get(m, ""))[:160])
+    t = t.sort_values(["outcome", "method"], key=lambda s: s.map({"OK": 0, "PARTIAL": 1, "SKIPPED": 2, "FAILED": 3}) if s.name == "outcome" else s)
+    n = t.outcome.value_counts()
+    txt = ("METHOD REPORT: " + ", ".join(f"{n.get(k, 0)} {k.lower()}" for k in ("OK", "PARTIAL", "SKIPPED", "FAILED"))
+           + f"  ({len(t)} methods)\n" + t.to_string(max_colwidth=160) + "\n")
+    (out / "summary").mkdir(exist_ok=True)
+    (out / "summary" / "run_report.txt").write_text(txt, encoding="utf-8")
+    t.to_csv(out / "summary" / "run_report.csv")
+    return txt
+
+
 def cmd_run(a) -> None:
     from src.evaluation import BenchConfig, run_benchmark, write_reports
     from src.evaluation.plots import make_all
@@ -262,6 +281,7 @@ def cmd_run(a) -> None:
         raise RuntimeError("no results produced - see benchmark.log")
     write_reports(a.out)
     print(f"\nstatus counts: {res.status.value_counts().to_dict()}")
+    print("\n" + run_report(res, out))
     print(f"tables: {out / 'summary'}")
     if not a.no_plots:
         print(f"figures: {len(make_all(a.out))} files in {out / 'figures'} and per-dataset figures/")
@@ -323,6 +343,9 @@ def cmd_pipeline(a) -> None:
     for s, st, t in report:
         print(f"  {s:<11} {st}  ({t:.1f}s)")
     print(f"outputs: {out}   (config saved to {out / 'pipeline_config.json'})")
+    rr = out / "summary" / "run_report.txt"
+    if "benchmark" in stages and rr.exists():
+        print("\n" + rr.read_text(encoding="utf-8"))
     if failed:
         raise SystemExit(1)
 
