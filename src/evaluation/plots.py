@@ -318,7 +318,7 @@ def _spatial_map(pred_csv: Path, path: Path, title: str) -> list[Path]:
         return []
     if "image" in d:
         d = d[d.image == d.image.value_counts().index[0]]     # largest image
-    d = d.assign(reference=d["gt_cell_type"] if "gt_cell_type" in d else d.get("true_phenotype"))
+    d = d.assign(reference=next((d[c] for c in ("gt_cell_type", "true_phenotype", "cell_type") if c in d), None))
     cols = [c for c in ("reference", "predicted_phenotype") if c in d and d[c].notna().any()]
     labels = sorted(set(np.concatenate([d[c].astype(str) for c in cols])))
     cmap = plt.get_cmap("tab20", max(len(labels), 1))

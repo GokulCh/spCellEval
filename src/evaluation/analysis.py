@@ -289,8 +289,9 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
             if not Path(r.pred_file).exists():
                 continue
             d0 = pd.read_csv(r.pred_file)
-            tcol = "gt_cell_type" if "gt_cell_type" in d0 else ("true_phenotype" if r.mode == "supervised" else None)
-            if tcol:                                          # no ground truth -> nothing to compare
+            # repo scripts (TACIT, Scyan, Leiden ...) write the truth as 'cell_type'; the runner renames it only in memory
+            tcol = next((c for c in ("gt_cell_type", "true_phenotype", "cell_type") if c in d0), None)
+            if tcol and "predicted_phenotype" in d0:          # no ground truth / predictions -> nothing to compare
                 by_method.setdefault(r.method, []).append(d0[[tcol, "predicted_phenotype"]].set_axis(["true_phenotype", "predicted_phenotype"], axis=1))
         for m, parts in by_method.items():
             d = pd.concat(parts, ignore_index=True)
