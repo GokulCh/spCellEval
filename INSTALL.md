@@ -26,8 +26,8 @@ Napari-based QC notebooks additionally need `napari`, `magicgui`, `qtpy`.
 | Eva | `Eva` package, `huggingface_hub` |
 | KRONOS | `kronos` |
 | VirTues | `virtues`, `lightning_fabric` |
-| MAPS | `maps` |
-| TRIBUS | `tribus` |
+| MAPS | clone github.com/mahmoodlab/MAPS, `pip install -e .` (own env: Python 3.9) |
+| TRIBUS | clone github.com/farkkilab/tribus, `pip install -e .` (own env) |
 | STARLING | `biostarling` (NOT `starling`, an unrelated package; pins numpy<2) |
 | scyan | `scyan` |
 | astir | `astir` |

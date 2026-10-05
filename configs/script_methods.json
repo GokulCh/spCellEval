@@ -1,4 +1,6 @@
 {
   "_comment": "Optional per-method interpreter overrides, e.g. \"scyan\": {\"python\": \"C:/envs/scyan/python.exe\"}, \"tacit\": {\"Rscript\": \"C:/R/bin/Rscript.exe\"}",
-  "starling": {"python": "/lustre/home/chaluvadig/anaconda3/envs/starling/bin/python"}
+  "starling": {"python": "/lustre/home/chaluvadig/anaconda3/envs/starling/bin/python"},
+  "maps": {"python": "/lustre/home/chaluvadig/anaconda3/envs/maps/bin/python"},
+  "tribus": {"python": "/lustre/home/chaluvadig/anaconda3/envs/tribus/bin/python"}
 }
