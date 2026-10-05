@@ -233,7 +233,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     def emit(name, impl, tier, split_, fold, fraction, run, df, imp, pred_file, n_train=NAN):
         key = dict(dataset=ds.name, method=name, split=split_, fold=fold, fraction=fraction)
         row = dict(**key, tier=tier, mode=cfg.mode, impl=impl, n_train=n_train, n_test=NAN if df is None else len(df),
-                   status=run["status"], error=(run.get("error") or "").strip().splitlines()[-1][:500] if run.get("error") else "",
+                   status=run["status"], error=(run.get("error") or "").strip().splitlines()[-1][:1500] if run.get("error") else "",
                    runtime_s=run.get("runtime_s", NAN), mem_mb=run.get("mem_mb"), device=device, pred_file=pred_file or "",
                    prior_source=(AUTO_NOTE if auto_prior else "supplied matrix") if name.removesuffix("+vote") in PRIOR_METHODS else "")
         lv_rows, cl_rows = [], []
@@ -242,7 +242,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
             row.update(r)
         im = [] if imp is None or split_ == "progressive" else [dict(**key, marker=m, importance=float(v)) for m, v in zip(ds.markers, imp)]
         log.info("[%s] %-24s %-11s fold=%s frac=%s -> %s %s", ds.name, name, split_, fold, fraction, run["status"],
-                 f"f1={row['f1_macro']:.3f}" if "f1_macro" in row else row["error"][:90])
+                 f"f1={row['f1_macro']:.3f}" if "f1_macro" in row else row["error"])
         return row, im, lv_rows, cl_rows
 
     def with_votes(recs_in, base, wanted):

@@ -227,7 +227,8 @@ def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> 
                 log.write_text("$ " + " ".join(cmd) + "\n\n" + text, encoding="utf-8")
                 where = f" (full output: {log})"
             out.update(status=_fail_status(p.returncode),
-                       error=f"exit {p.returncode}: " + (lines[-1][:300] if lines else "no output") + where)
+                       error=f"exit {p.returncode}: " + (" | ".join(lines[-4:])[:1000] if lines else "no output") + where)  # last lines: R ends with a bare 'Execution halted'
+
     except subprocess.TimeoutExpired:
         out.update(status="timeout", error=f"exceeded {timeout:.0f}s")
     except FileNotFoundError as e:
