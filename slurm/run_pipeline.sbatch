@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submit with:   mkdir -p logs && sbatch slurm/run_pipeline.sbatch
 # Override without editing:   JOBS=8 THREADS=6 ORDER=slow-first OUT=data/results/crc_tma_run2 sbatch slurm/run_pipeline.sbatch
-# Real marker matrix:         MARKER_MATRIX=data/datasets/crc_tma/crc_tma_marker_matrix.csv sbatch slurm/run_pipeline.sbatch
+# Marker matrix:              defaults to ./crc_tma_marker_matrix.csv; another file: MARKER_MATRIX=<csv> sbatch ...; none (circular auto-draft): MARKER_MATRIX= sbatch ...
 #                             (without one, TACIT / Scyan / Astir / marker_score run on a matrix drafted from the labels; flagged as circular)
 # Different size:             sbatch --cpus-per-task=64 --mem=384G slurm/run_pipeline.sbatch     (JOBS and THREADS follow automatically)
 # Different environment:      PYTHON=/path/to/env/bin/python sbatch slurm/run_pipeline.sbatch   (find it with `which python` inside the env)
@@ -40,8 +40,9 @@ THREADS=${THREADS:-$(( CPUS / 8 ))}
 [ "$THREADS" -lt 1 ] && THREADS=1
 ORDER=${ORDER:-fast-first}                        # fast-first: quick results early | slow-first: usually the shortest total time | listed
 
+MARKER_MATRIX=${MARKER_MATRIX-crc_tma_marker_matrix.csv}   # unset -> the bundled file; set but empty -> none
 EXTRA=()
-[ -n "${MARKER_MATRIX:-}" ] && EXTRA+=(--marker-matrix "$MARKER_MATRIX")
+[ -n "$MARKER_MATRIX" ] && { [ -f "$MARKER_MATRIX" ] || { echo "marker matrix not found: $MARKER_MATRIX"; exit 1; }; EXTRA+=(--marker-matrix "$MARKER_MATRIX"); }
 
 echo "python=$PYTHON"
 echo "cpus=$CPUS jobs=$JOBS threads-per-multithreaded-method=$THREADS order=$ORDER out=$OUT marker-matrix=${MARKER_MATRIX:-auto-draft (circular)}"
