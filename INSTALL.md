@@ -21,7 +21,7 @@ Napari-based QC notebooks additionally need `napari`, `magicgui`, `qtpy`.
 
 | Method | Extra requirements |
 |---|---|
-| Stellar | `src/methods/Stellar/requirements.txt` / `environment.yml` |
+| Stellar | table version needs only torch, torch_geometric, scipy, scikit-learn, pandas (own env if `cta` lacks them); see `src/methods/Stellar/requirements.txt` |
 | CellLENS | `celllens`, `torch_geometric` |
 | Eva | `Eva` package, `huggingface_hub` |
 | KRONOS | `kronos` |

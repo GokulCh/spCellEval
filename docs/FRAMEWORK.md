@@ -15,7 +15,8 @@ The framework **orchestrates the repository's own code** and only adds what the 
 | Metrics | the evaluation notebook's own functions, extracted at import time from `evaluation/eval_mapping.ipynb` (hierarchical F1, G-mean, composition distribution, R2/Pearson, timing parser); `hierarchy_mappings.pkl`, `cell_type_hierarchy.txt`; repo score weights, stability and scalability formulas; `scalability_score.json` | sensitivity / specificity / rare-vs-abundant accuracy, per-class table, unsupervised QC |
 | Colours / figure styles | `plotting/method_colors.json`, `dataset_colors.json`, `funky_heatmap.R` input columns | the figures themselves (the repo's plots are notebook cells with hard-coded paths) |
 | SVM, Louvain, SPADE, SingleR, scANVI, scArches, spatial GNN (SGC), kNN smoothing, spatial voting, marker-score pseudo-labelling | nothing in the repo | `src/models/{traditional,reference,spatial,marker}.py` |
-| CellSighter, STELLAR, Nimbus, DeepCellTypes | scripts exist but are image-based or dataset-bound (cannot be driven from a quantification table) | registered, reported as `skipped` with the reason |
+| STELLAR | `Stellar/run_stellar.py` (model + recipe; images + hard-coded paths, so not usable on a table) | `Stellar/run_stellar_table.py`: same model on the quantification table (graph per image from x/y, pipeline folds, cv only) |
+| CellSighter, Nimbus, DeepCellTypes | scripts exist but are image-based or dataset-bound (cannot be driven from a quantification table) | registered, reported as `skipped` with the reason |
 | RIBCA | no script in the repo | registered, `skipped` |
 
 ## Pipeline

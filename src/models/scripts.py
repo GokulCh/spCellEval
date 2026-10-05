@@ -5,7 +5,7 @@ Nothing about these methods is re-implemented: each entry only knows how to call
 ``methods/scyan/run_scyan.py`` ...) with the arguments it already defines, on the dataset workspace written in
 the repo's own layout, and where to find the ``predictions_*.csv`` it produces.
 
-A script that is dataset-bound or image-based (CellSighter, STELLAR, Nimbus, DeepCellTypes) is registered with the
+A script that is dataset-bound or image-based (CellSighter, Nimbus, DeepCellTypes) is registered with the
 reason it cannot be driven from a quantification table; it is reported as ``skipped``.
 Optional interpreter overrides (e.g. a conda env per method) go in ``configs/script_methods.json``.
 """
@@ -25,6 +25,7 @@ import pandas as pd
 
 from ..repo import METHODS, ROOT
 from ..preprocessing.workspace import Workspace
+from ..preprocessing.data import LEVEL_COLUMN
 from .base import MethodUnavailable, register_external
 from .marker import conform_matrix, find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml
 
@@ -175,6 +176,13 @@ def _maps(c: ScriptCtx) -> list[str]:
     return [str(dst), str(c.out), str(c.ws.labels)]
 
 
+def _stellar(c: ScriptCtx) -> list[str]:
+    """run_stellar_table.py: the table version of STELLAR (graph per image from the x/y columns, pipeline folds)."""
+    return ["--quant", str(c.ws.quant), "--folds_dir", str(c.ws.kdir), "--output_dir", str(c.out),
+            "--label_col", LEVEL_COLUMN[c.ws.level], "--device", "cuda" if c.device == "cuda" else "cpu", "--seed", str(c.seed),
+            "--markers", *c.ws.markers]
+
+
 # name -> (tier, kind, spec, python modules required, executables required)
 SPECS: dict[str, tuple] = {
     "leiden": (1, "cluster", ScriptSpec("leiden/run_leiden_clustering.py", "python", _leiden, nested=True), ("scanpy", "leidenalg", "anndata"), ()),
@@ -188,8 +196,7 @@ SPECS: dict[str, tuple] = {
     "maps": (2, "supervised", ScriptSpec("MAPS/run_maps.py", "python", _maps, mode="folds"), ("maps",), ()),
     "cellsighter": (2, "supervised", ScriptSpec("CellSighter/run_cellsighter.py", "python", None,
                     reason="image-based (needs images + segmentation masks), driven by its own json config"), (), ()),
-    "stellar": (2, "supervised", ScriptSpec("Stellar/run_stellar.py", "python", None,
-                reason="dataset-bound (--dataset immucan|chl, reads images), not a quantification-table method"), (), ()),
+    "stellar": (2, "supervised", ScriptSpec("Stellar/run_stellar_table.py", "python", _stellar, mode="folds"), ("torch", "torch_geometric"), ()),
     "nimbus": (3, "cluster", ScriptSpec("Nimbus/nimbus.py", "python", None,
                reason="image-based (needs multiplex tiffs + masks)"), (), ()),
     "deepcelltypes": (3, "prior", ScriptSpec("deepcelltypes/run_deepcelltypes.py", "python", None,
