@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--splits-dir", help="folder that holds the folds. Default: the folder of the --data file (its processed/ folder). "
                                              "'out': keep them inside the run's own workspace. Existing folds are reused only if the data, "
                                              "labels and split settings match; otherwise new ones replace them. Your csv is never modified.")
+        sp.add_argument("--resume", action="store_true", help="skip methods whose results are already saved under --out (re-run only failed / missing ones)")
         sp.add_argument("--script-runs", type=int, default=1, help="repeats for repo scripts that support n_runs (stability needs > 1)")
         sp.add_argument("--modality", choices=MODALITIES, default="codex")
         sp.add_argument("--transform", choices=["auto", "arcsinh", "log1p", "none"], default="auto")
@@ -337,7 +338,7 @@ def cmd_run(a) -> None:
                         handlers=[logging.StreamHandler(), logging.FileHandler(out / "benchmark.log", encoding="utf-8")])
     cfg = BenchConfig(
         data=a.data, out=a.out, methods=resolve_methods(a.methods), mode=a.mode, split=a.split, folds=a.folds,
-        kfold_method=a.kfold_method, script_runs=a.script_runs, fractions=tuple(float(f) for f in a.fractions.split(",")),
+        kfold_method=a.kfold_method, script_runs=a.script_runs, resume=getattr(a, "resume", False), fractions=tuple(float(f) for f in a.fractions.split(",")),
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
         level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,

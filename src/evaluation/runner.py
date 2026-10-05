@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,6 +88,7 @@ class BenchConfig:
     n_jobs_model: int = 1
     script_runs: int = 1                   # repeats for the repo scripts that support n_runs (stability needs > 1)
     save_predictions: bool = True
+    resume: bool = False                   # skip methods whose results are already saved (ok / skipped) in <out>/<dataset>/_methods
     splits_dir: str | None = None          # where the folds live: None/'auto' (next to the data file), 'out', or a folder
 
 
@@ -407,12 +409,39 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     wanted_all = list(dict.fromkeys(cfg.methods))
     bases = order_methods(list(dict.fromkeys(w.removesuffix("+vote") for w in wanted_all)), cfg.order)
     log.info("[%s] %d methods queued, %d at a time: %s", ds.name, len(bases), max(cfg.jobs, 1), ", ".join(bases))
+    # Each method's rows go to disk the moment it finishes (<out>/<dataset>/_methods/<method>/<frame>.csv) and are not kept in
+    # memory; the run-wide csvs are merged from those files. A 'done' marker means every row is ok / skipped, so --resume re-runs
+    # only the failed / timed-out methods.
+    mdir, lock = out_dir / "_methods", threading.Lock()
+    if not cfg.resume:
+        shutil.rmtree(mdir, ignore_errors=True)
+
+    def merged() -> dict[str, pd.DataFrame]:
+        got = {k: [pd.read_csv(f) for b in bases if (f := mdir / b / f"{k}.csv").exists()] for k in FRAMES}
+        return {k: pd.concat(v, ignore_index=True) if v else pd.DataFrame() for k, v in got.items()}
+
+    def run_and_dump(b: str) -> None:
+        d = mdir / b
+        if cfg.resume and (d / "done").exists():
+            log.info("[%s] %-24s skipped: results already saved (--resume)", ds.name, b)
+            return
+        outs = run_method(b, {w for w in wanted_all if w.removesuffix("+vote") == b})
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+        for i, k in enumerate(FRAMES):
+            rows = [o[0] for o in outs] if i == 0 else [r for o in outs for r in o[i]]
+            if rows:
+                pd.DataFrame(rows).to_csv(d / f"{k}.csv", index=False)
+        if all(o[0]["status"] in ("ok", "skipped") for o in outs):
+            (d / "done").write_text("")
+        if len(cfg.data) == 1:                                   # keep the run-wide csvs current, so `visualize` works on a partial run
+            with lock:
+                for k, v in merged().items():
+                    v.to_csv(Path(cfg.out) / FILES[k], index=False)
+
     with ThreadPoolExecutor(max(cfg.jobs, 1)) as ex:
-        outs = [o for part in ex.map(lambda b: run_method(b, {w for w in wanted_all if w.removesuffix("+vote") == b}), bases) for o in part]
-    frames = {"results": pd.DataFrame([o[0] for o in outs])}
-    for i, k in enumerate(FRAMES[1:], start=1):
-        frames[k] = pd.DataFrame([r for o in outs for r in o[i]])
-    return frames
+        list(ex.map(run_and_dump, bases))
+    return merged()
 
 
 def run_benchmark(cfg: BenchConfig) -> pd.DataFrame:

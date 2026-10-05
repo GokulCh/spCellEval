@@ -43,6 +43,7 @@ ORDER=${ORDER:-fast-first}                        # fast-first: quick results ea
 
 MARKER_MATRIX=${MARKER_MATRIX-data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv}   # unset -> the bundled file; set but empty -> none
 EXTRA=()
+[ -n "${RESUME:-}" ] && EXTRA+=(--resume)          # RESUME=1 sbatch ...: keep finished methods' results, re-run only failed / missing ones
 [ -n "$MARKER_MATRIX" ] && { [ -f "$MARKER_MATRIX" ] || { echo "marker matrix not found: $MARKER_MATRIX"; exit 1; }; EXTRA+=(--marker-matrix "$MARKER_MATRIX"); }
 
 echo "python=$PYTHON"
