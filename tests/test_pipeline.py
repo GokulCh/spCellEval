@@ -554,7 +554,7 @@ def test_model_threads_reach_the_classic_script_and_native_methods(data, tmp_pat
 def test_sbatch_script_is_valid_and_uses_the_new_options():
     f = Path(__file__).resolve().parents[1] / "slurm" / "run_pipeline.sbatch"
     txt = f.read_text()
-    assert txt.startswith("#!/bin/bash") and "--cpus-per-task=16" in txt and "--model-threads" in txt and "--jobs" in txt
+    assert txt.startswith("#!/bin/bash") and "--cpus-per-task=16" in txt and "--model-threads" in txt and "--jobs" in txt and '--order "$ORDER"' in txt
     import subprocess
     assert subprocess.run(["bash", "-n", str(f)]).returncode == 0
 
