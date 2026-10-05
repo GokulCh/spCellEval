@@ -68,9 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--batch-correct", choices=["none", "median"], default="none")
         sp.add_argument("--level", choices=["level1", "level2", "level3"], default="level3")
         sp.add_argument("--marker-matrix", help="decision matrix CSV (default: bundled one matching the dataset name)")
+        sp.add_argument("--no-auto-matrix", action="store_true",
+                        help="do not create a draft decision matrix from the labels when TACIT / Scyan / Astir / marker_score have none")
         sp.add_argument("--max-cells", type=int, default=0, help="random subsample for quick runs (0 = all)")
         sp.add_argument("--timeout", type=float, default=0, help="per-method seconds; >0 isolates each method in a killable process")
         sp.add_argument("--jobs", type=int, default=1, help="methods run concurrently")
+        sp.add_argument("--order", choices=["fast-first", "slow-first", "listed"], default="fast-first",
+                        help="queue order of the methods: fast-first (quick results early), slow-first (starts the slowest "
+                             "methods at once; usually finishes the whole run sooner) or the order given")
+        sp.add_argument("--model-threads", type=int, default=1,
+                        help="CPU threads inside each method that supports it (random forest, XGBoost, ...). "
+                             "Use about cpus / --jobs so the two together fit your allocation")
         sp.add_argument("--device", choices=["cpu", "gpu", "auto"], default="auto")
         sp.add_argument("--seed", type=int, default=0)
         sp.add_argument("--k-neighbors", type=int, default=10)
@@ -130,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("visualize", help="figures + summary tables from a results directory")
     sp.add_argument("--results", default="results/benchmark")
+    sp = add("marker-template", help="write a marker decision-matrix CSV (cell types x markers) for TACIT / Scyan / Astir / marker_score")
+    sp.add_argument("--data", nargs="+", required=True, help="the processed quantification table")
+    sp.add_argument("--out", help="output csv (default: results/marker_matrix_<dataset>.csv)")
+    sp.add_argument("--modality", choices=MODALITIES, default="codex")
+    sp.add_argument("--level", choices=["level1", "level2", "level3"], default="level3")
+    sp.add_argument("--draft", action="store_true",
+                    help="pre-fill +1 for each cell type's top markers from YOUR labels (a starting point to edit; see the warning it prints)")
     add("methods", help="list methods, tiers and availability")
     return p
 
@@ -172,6 +187,31 @@ def resolve_methods(spec: str) -> list[str]:
 
 
 # ------------------------------------------------------------------ stages
+def cmd_marker_template(a) -> None:
+    """Skeleton decision matrix in the repo's format: first column Populations, one column per marker, +1 / -1 / blank."""
+    import numpy as np
+    import pandas as pd
+    from src.preprocessing import load_dataset
+    if len(a.data) != 1:
+        raise ValueError("give a single dataset to --data")
+    ds = load_dataset(a.data[0], modality=a.modality, level=a.level)
+    if ds.y is None:
+        raise ValueError("the table has no label column, so there are no cell types to list")
+    from src.models.marker import draft_matrix
+    types = sorted(pd.unique(ds.y))
+    m = draft_matrix(ds.X.to_numpy(float), ds.markers, ds.y) if a.draft else \
+        pd.DataFrame(np.nan, index=pd.Index(types, name="Populations"), columns=ds.markers)     # NaN is written as a blank cell
+    out = Path(a.out or f"results/marker_matrix_{ds.name}.csv")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    m.to_csv(out, float_format="%d")
+    print(f"wrote {out}: {len(types)} cell types x {len(ds.markers)} markers" + (" (draft filled in)" if a.draft else " (empty: fill in +1 / -1)"))
+    print("  format: +1 = marker must be positive for the type, -1 = must be negative, blank = not used (see src/methods/scyan/*_decision_matrix_level3.csv)")
+    if a.draft:
+        print("  WARNING: this draft was derived from your own labels, so it is not independent prior knowledge. It is only good for checking that\n"
+              "  TACIT / Scyan / Astir run. For a real benchmark, replace it with marker definitions from the literature or the data's authors.")
+    print(f"  use it with:  --marker-matrix {out}")
+
+
 def cmd_methods(_) -> None:
     from src.models import REGISTRY, TIERS
     st = method_status()
@@ -275,8 +315,11 @@ def run_report(res, out: Path) -> str:
     t["first_problem"] = t.index.map(lambda m: str(err.get(m, ""))[:160])
     t = t.sort_values(["outcome", "method"], key=lambda s: s.map({"OK": 0, "PARTIAL": 1, "SKIPPED": 2, "FAILED": 3}) if s.name == "outcome" else s)
     n = t.outcome.value_counts()
+    auto = sorted(res[res.get("prior_source", "").astype(str).str.startswith("auto-draft")].method.unique()) if "prior_source" in res else []
     txt = ("METHOD REPORT: " + ", ".join(f"{n.get(k, 0)} {k.lower()}" for k in ("OK", "PARTIAL", "SKIPPED", "FAILED"))
-           + f"  ({len(t)} methods)\n" + t.to_string(max_colwidth=160) + "\n")
+           + f"  ({len(t)} methods)\n" + t.to_string(max_colwidth=160) + "\n"
+           + (f"\nNOTE: {', '.join(auto)} used a marker matrix auto-created from the dataset's own labels, so their scores are circular "
+              "(not independent prior knowledge). Supply --marker-matrix for a fair result.\n" if auto else ""))
     (out / "summary").mkdir(exist_ok=True)
     (out / "summary" / "run_report.txt").write_text(txt, encoding="utf-8")
     t.to_csv(out / "summary" / "run_report.csv")
@@ -295,7 +338,7 @@ def cmd_run(a) -> None:
         kfold_method=a.kfold_method, script_runs=a.script_runs, fractions=tuple(float(f) for f in a.fractions.split(",")),
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
-        level=a.level, marker_matrix=a.marker_matrix, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
+        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
         device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None))
     res = run_benchmark(cfg)
     if res.empty:
@@ -653,7 +696,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 0
         {"methods": cmd_methods, "preprocess": cmd_preprocess, "train": cmd_run, "benchmark": cmd_run,
-         "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline, "convert": cmd_convert}[a.cmd](a)
+         "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline, "convert": cmd_convert,
+         "marker-template": cmd_marker_template}[a.cmd](a)
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return 130

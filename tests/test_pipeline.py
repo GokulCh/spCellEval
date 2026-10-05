@@ -215,8 +215,21 @@ def test_script_adapter_ingests_variants_logs_failures_and_times_out(data, tmp_p
     assert s[(s.method == "stub_a") & (s.fold == 1)].runtime_s.iloc[0] == 3.5           # from the script's own fold_times.txt
     assert {"stub_a", "stub_b", "stub_a+vote", "stub_b+vote"} <= set(r.method)
     assert r[r.method == "stub_bad"].status.iloc[0] == "failed" and "boom" in r[r.method == "stub_bad"].error.iloc[0]
+    log = tmp_path / "o" / "toy" / "workspace" / "logs" / "stub_bad.log"                # the full output of a failed script is kept
+    assert log.exists() and "boom: bad input" in log.read_text() and str(log) in r[r.method == "stub_bad"].error.iloc[0]
     assert r[r.method == "stub_slow"].status.iloc[0] == "timeout"
     assert (r[r.method == "svm"].status == "ok").all()                                   # batch carried on
+
+
+def test_maps_gets_only_markers_and_the_encoded_label(data, tmp_path):
+    from src.preprocessing import build_workspace, load_dataset, transform
+    ds = transform(load_dataset(data[0]))
+    ws = build_workspace(ds, ds.y, tmp_path / "ws")
+    kdir, results, labels = scripts_mod._maps(scripts_mod.ScriptCtx(ws, tmp_path / "out"))
+    for f in ("fold_1_train.csv", "fold_1_validation.csv", "fold_5_test.csv"):
+        cols = list(pd.read_csv(Path(kdir) / f, nrows=1).columns)
+        assert cols == [*MARKERS, "encoded_phenotype"], cols      # no image / x / y / spc_row / label columns for it to trip over
+    assert Path(labels) == ws.labels
 
 
 @pytest.mark.skipif(not HAS_SCANPY, reason="scanpy + leidenalg not installed")
@@ -487,3 +500,73 @@ def test_wizard_offers_conversion_for_raw_table(raw_table, tmp_path, monkeypatch
     assert "looks like a RAW table" in txt and "Transform: none" in txt and "stage: convert" in txt and "FAILED" not in txt
     assert (out / "converted" / "datasets" / "TOY" / "quantification" / "processed" / "TOY_quantification.csv").exists()
     assert set(pd.read_csv(out / "benchmark_results.csv").method) == {"svm"}
+
+
+# ------------------------------------------------------------------ marker matrix helper
+def test_marker_template_draft_feeds_marker_methods(data, tmp_path, capsys):
+    m = tmp_path / "m.csv"
+    assert cli.main(["marker-template", "--data", str(data[0]), "--draft", "--out", str(m)]) == 0
+    t = pd.read_csv(m, index_col=0)
+    assert t.index.name == "Populations" and set(t.index) == set(TYPES) and list(t.columns) == MARKERS
+    for ct, (mk, _) in TYPES.items():
+        assert t.loc[ct, mk] == 1                                                  # each type's own marker is positive
+    assert "not independent prior knowledge" in capsys.readouterr().out
+    assert cli.main(["marker-template", "--data", str(data[0]), "--out", str(tmp_path / "e.csv")]) == 0
+    assert pd.read_csv(tmp_path / "e.csv", index_col=0).isna().all().all()          # without --draft: an empty skeleton to fill in
+    # and the matrix is accepted by the methods that were skipped without one
+    assert cli.main(["benchmark", "--data", str(data[0]), "--out", str(tmp_path / "o"), "--marker-matrix", str(m),
+                     "--methods", "marker_score", "--split", "holdout", "--no-plots"]) == 0
+    r = pd.read_csv(tmp_path / "o" / "benchmark_results.csv")
+    assert (r.status == "ok").all() and r.f1_macro.iloc[0] > 0.5
+
+
+def test_missing_marker_matrix_is_created_from_labels_and_flagged(data, tmp_path, capsys):
+    common = ["--data", str(data[0]), "--modality", "codex", "--methods", "marker_score", "--split", "holdout", "--no-plots"]
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "a")]) == 0
+    r = pd.read_csv(tmp_path / "a" / "benchmark_results.csv")
+    assert (r.status == "ok").all() and r.prior_source.iloc[0].startswith("auto-draft") and r.f1_macro.iloc[0] > 0.5
+    assert (tmp_path / "a" / "toy" / "auto_marker_matrix.csv").exists()                  # the created matrix is kept for inspection
+    out = capsys.readouterr().out
+    assert "no marker decision matrix was given or bundled" in out or "marker_score used a marker matrix auto-created" in out
+    assert "marker_score used a marker matrix auto-created" in out                        # flagged in the end report ...
+    assert "circular" in (tmp_path / "a" / "analysis" / "insights.md").read_text()        # ... and in the insights
+    # a supplied matrix is used as is and not flagged
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "s"), "--marker-matrix", str(tmp_path / "a" / "toy" / "auto_marker_matrix.csv")]) == 0
+    assert pd.read_csv(tmp_path / "s" / "benchmark_results.csv").prior_source.iloc[0] == "supplied matrix"
+    # the off switch keeps the old behaviour: skipped, nothing created
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-auto-matrix"]) == 0
+    r = pd.read_csv(tmp_path / "b" / "benchmark_results.csv")
+    assert set(r.status) == {"skipped"} and not (tmp_path / "b" / "toy" / "auto_marker_matrix.csv").exists()
+
+
+@needs_xgb
+def test_model_threads_reach_the_classic_script_and_native_methods(data, tmp_path, monkeypatch):
+    seen = []
+    real = scripts_mod._run
+    monkeypatch.setattr(scripts_mod, "_run", lambda cmd, *a, **k: (seen.append(cmd), real(cmd, *a, **k))[1])
+    assert cli.main(["benchmark", "--data", str(data[0]), "--out", str(tmp_path / "o"), "--split", "holdout", "--no-plots",
+                     "--methods", "random_forest,knn_smooth", "--jobs", "2", "--model-threads", "3"]) == 0
+    rf = next(c for c in seen if "random_forest" in c)
+    assert rf[rf.index("--n_jobs_model") + 1] == "3"                                    # the repo's classic-ML script got 3 threads
+    assert (pd.read_csv(tmp_path / "o" / "benchmark_results.csv").status == "ok").all()
+
+
+def test_sbatch_script_is_valid_and_uses_the_new_options():
+    f = Path(__file__).resolve().parents[1] / "slurm" / "run_pipeline.sbatch"
+    txt = f.read_text()
+    assert txt.startswith("#!/bin/bash") and "--cpus-per-task=16" in txt and "--model-threads" in txt and "--jobs" in txt
+    import subprocess
+    assert subprocess.run(["bash", "-n", str(f)]).returncode == 0
+
+
+def test_queue_order_fast_first_slow_first_and_unrunnable_first(monkeypatch):
+    from src.evaluation.runner import order_methods
+    names = ["leiden", "logistic_regression", "spade", "random_forest", "singler", "most_frequent", "cellsighter"]
+    monkeypatch.setattr(type(REGISTRY["svm"]), "status", lambda self: "needs an image" if self.name == "cellsighter" else "ready")
+    fast = order_methods(names, "fast-first")
+    assert fast[0] == "cellsighter"                                             # cannot run: reports 'skipped' at once, so it goes first
+    assert fast.index("spade") < fast.index("logistic_regression") < fast.index("random_forest") < fast.index("leiden")
+    slow = order_methods(names, "slow-first")
+    assert slow[0] == "cellsighter" and slow[1] == "leiden" and slow.index("random_forest") < slow.index("spade")
+    assert order_methods(names, "listed") == names
+    assert set(fast) == set(slow) == set(names)

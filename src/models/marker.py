@@ -98,3 +98,20 @@ def marker_score(t: Task) -> Result:
     S = marker_scores(t.X_test, M)
     lab = np.array(types, dtype=object)[S.argmax(1)]
     return Result(np.where(S.max(1) > 0, lab, "Unknown").astype(str))
+
+
+PRIOR_METHODS = {"tacit", "scyan", "astir", "marker_score"}      # the methods that need a marker decision matrix
+AUTO_NOTE = "auto-draft from the dataset's own labels (circular: not independent prior knowledge)"
+
+
+def draft_matrix(X, markers, y, top: int = 3, min_z: float = 1.0) -> pd.DataFrame:
+    """Decision matrix in the repo's format drafted from labelled data: +1 for each type's ``top`` markers whose mean
+    z-score is >= ``min_z``. Derived from the labels, so it is NOT independent prior knowledge."""
+    X = np.asarray(X, float)
+    z = pd.DataFrame((X - X.mean(0)) / np.where(X.std(0) == 0, 1, X.std(0)), columns=list(markers)).groupby(np.asarray(y)).mean()
+    m = pd.DataFrame(np.nan, index=pd.Index(sorted(z.index), name="Populations"), columns=list(markers))
+    for t in m.index:
+        best = z.loc[t].sort_values(ascending=False)
+        for mk in best[best >= min_z].index[:top]:
+            m.loc[t, mk] = 1.0
+    return m

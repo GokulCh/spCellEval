@@ -110,7 +110,11 @@ def _flowsom(c: ScriptCtx) -> list[str]:
 
 
 def _tacit(c: ScriptCtx) -> list[str]:
-    return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(_csv_matrix(c, "TACIT")),
+    m = pd.read_csv(_csv_matrix(c, "TACIT"))
+    m = m.rename(columns={m.columns[0]: "cell_type"})                  # the bundled TACIT matrices use this header
+    (c.ws.root / "tacit_matrix.csv").parent.mkdir(parents=True, exist_ok=True)
+    m.to_csv(c.ws.root / "tacit_matrix.csv", index=False)
+    return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(c.ws.root / "tacit_matrix.csv"),
             "--separate_col", c.ws.split_col, "--output_path", str(c.out), "-n", str(c.n_runs)]
 
 
@@ -139,7 +143,13 @@ def _starling(c: ScriptCtx) -> list[str]:
 
 
 def _maps(c: ScriptCtx) -> list[str]:
-    return [str(c.ws.kdir), str(c.out), str(c.ws.labels)]
+    """run_maps.py keeps every column except a hard-coded drop list, so any other metadata column (patient, region,
+    spc_row ...) would become a feature or break it. Give it fold files with the markers + encoded_phenotype only."""
+    src, dst = c.ws.kdir, c.ws.root / "maps_in" / c.ws.kdir.name
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in src.glob("fold_*_*.csv"):
+        pd.read_csv(f, usecols=[*c.ws.markers, "encoded_phenotype"]).to_csv(dst / f.name, index=False)
+    return [str(dst), str(c.out), str(c.ws.labels)]
 
 
 # name -> (tier, kind, spec, python modules required, executables required)
@@ -179,14 +189,22 @@ def _fail_status(rc: int) -> str:
     return "oom" if rc in (-9, 137, 3221225477) else "failed"
 
 
-def _run(cmd: list[str], cwd: Path, timeout: float) -> dict:
+def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> dict:
+    """Run a script. On failure the full stdout/stderr goes to ``log`` and the error text names the file."""
     out = dict(status="ok", error="", runtime_s=float("nan"))
     t0 = time.perf_counter()
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None)
         if p.returncode:
+            text = (p.stderr or "") + ("\n--- stdout ---\n" + p.stdout if p.stdout else "")
             lines = [l.strip() for l in (p.stderr or p.stdout).splitlines() if l.strip()]
-            out.update(status=_fail_status(p.returncode), error=f"exit {p.returncode}: " + " | ".join(lines[-4:])[:450])
+            where = ""
+            if log is not None:
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text("$ " + " ".join(cmd) + "\n\n" + text, encoding="utf-8")
+                where = f" (full output: {log})"
+            out.update(status=_fail_status(p.returncode),
+                       error=f"exit {p.returncode}: " + (lines[-1][:300] if lines else "no output") + where)
     except subprocess.TimeoutExpired:
         out.update(status="timeout", error=f"exceeded {timeout:.0f}s")
     except FileNotFoundError as e:
@@ -220,7 +238,7 @@ def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, t
     kw = CLASSIC_KWARGS.get(model)
     if kw:
         cmd += ["--model_kwargs", str(METHODS / "classic_ml" / kw)]
-    r = _run(cmd, METHODS / "classic_ml", timeout)
+    r = _run(cmd, METHODS / "classic_ml", timeout, ws.root / "logs" / f"{model}_{root.name}.log")
     out = root / "results" / ws.name / f"{model}_default_{ws.kfold_method}" / ws.level
     r["out"] = out
     r["files"] = sorted(out.glob("predictions_fold_*.csv"), key=lambda p: int(re.findall(r"\d+", p.stem)[-1]))
@@ -253,7 +271,7 @@ def run_script(name: str, ctx: ScriptCtx, timeout: float) -> dict:
     ctx.out.mkdir(parents=True, exist_ok=True)
     script = METHODS / spec.script
     cmd = [spec.interpreter(), str(script), *spec.build(ctx)]
-    r = _run(cmd, script.parent, timeout)
+    r = _run(cmd, script.parent, timeout, ctx.ws.root / "logs" / f"{name}.log")
     r["files"] = collect_predictions(ctx.out)
     r["fold_times"] = {}
     return r

@@ -118,3 +118,11 @@ processed/
   stored ones. Folds without a fingerprint file cannot be verified and are rebuilt.
 * A benchmark run keeps its own scratch workspace (`<out>/<dataset>/workspace/`) because the repo's classic-ML script needs
   its `datasets/<name>/quantification/processed/` layout; it holds links to the folds plus that method's results.
+
+## Marker decision matrices
+
+TACIT, Scyan, Astir and `marker_score` need one. Order of use: `--marker-matrix <csv>`, else the repo's bundled matrix for the
+dataset, else (labelled data only) a **draft created from the dataset's own labels** (`<out>/<dataset>/auto_marker_matrix.csv`: +1 for each
+type's top-3 markers with mean z >= 1). That draft is circular - the methods are scored against the answers it was built from - so
+every affected result row carries `prior_source = auto-draft ...`, and the end report and `insights.md` say so. `--no-auto-matrix`
+skips those methods instead. `python cli.py marker-template --data <csv> [--draft]` writes an empty skeleton (or the draft) to edit by hand.

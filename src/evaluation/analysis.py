@@ -364,6 +364,9 @@ def write_insights(root: Path, tabs: dict, res: pd.DataFrame) -> None:
     md, js = ["# Automated insights\n"], {}
     for ds in sorted(res.dataset.unique()):
         s, j = [f"\n## {ds}\n"], {}
+        if "prior_source" in res and res[(res.dataset == ds)].prior_source.astype(str).str.startswith("auto-draft").any():
+            s.append("- **Caveat**: the marker methods (" + ", ".join(sorted(res[(res.dataset == ds) & res.prior_source.astype(str).str.startswith("auto-draft")].method.unique()))
+                     + ") used a decision matrix drafted from this dataset's own labels, so their scores are circular, not independent prior knowledge.")
         rep = root / ds / "dataset_report" / "summary.json"
         if rep.exists():
             r = json.loads(rep.read_text())

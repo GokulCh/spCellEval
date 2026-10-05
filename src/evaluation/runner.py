@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import REGISTRY, MethodUnavailable, Task, resolve_device, run_isolated
-from ..models.marker import find_marker_matrix, load_marker_matrix, pseudo_labels
+from ..models.marker import AUTO_NOTE, PRIOR_METHODS, draft_matrix, find_marker_matrix, load_marker_matrix, pseudo_labels
 from ..models.scripts import ScriptCtx, classic_importance, parse_fold_times, run_classic, run_script
 from ..models.spatial import spatial_vote
 from ..preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
@@ -74,6 +74,8 @@ class BenchConfig:
     batch_correct: str = "none"
     level: str = "level3"
     marker_matrix: str | None = None
+    order: str = "fast-first"             # fast-first | slow-first | listed (queue order of the methods)
+    auto_matrix: bool = True               # build a draft decision matrix from the labels when a marker method has none
     max_cells: int = 0
     timeout: float = 0.0
     jobs: int = 1
@@ -84,6 +86,31 @@ class BenchConfig:
     script_runs: int = 1                   # repeats for the repo scripts that support n_runs (stability needs > 1)
     save_predictions: bool = True
     splits_dir: str | None = None          # where the folds live: None/'auto' (next to the data file), 'out', or a folder
+
+
+# Rough runtime in minutes of each method on a ~235k-cell, 56-marker table (from a real run; it grows with dataset size).
+# Only used to order the queue; unknown methods count as 10.
+EST_MINUTES = {"marker_score": 1, "spade": 1, "singler": 2, "most_frequent": 2, "stratified": 2, "tacit": 5, "svm": 7,
+               "logistic_regression": 8, "flowsom": 8, "astir": 10, "scyan": 10, "tribus": 10, "spatial_gnn": 10, "xgboost": 10,
+               "louvain": 12, "random_forest": 15, "knn_smooth": 15, "maps": 15, "starling": 30, "scanvi": 40, "scarches": 40,
+               "leiden": 40}
+
+
+def order_methods(names: list[str], how: str = "fast-first") -> list[str]:
+    """Queue order. Methods that cannot run here (they just report 'skipped') always go first; the rest by estimated cost.
+
+    fast-first: quick results early, nothing waits behind a slow method.  slow-first: starts the slowest methods at once,
+    which usually finishes the whole run sooner.  listed: the order given.
+    """
+    if how == "listed":
+        return list(names)
+    ready = lambda b: REGISTRY[b].status() == "ready"
+    sign = 1 if how == "fast-first" else -1
+    return sorted(names, key=lambda b: (0, 0) if not ready(b) else (1, sign * EST_MINUTES.get(b, 10)))
+
+
+def out_dir_for(cfg: BenchConfig, name: str) -> Path:
+    return (Path(cfg.out) / name).resolve()
 
 
 def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
@@ -99,6 +126,16 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
         log.exception("%s: dataset report failed (continuing)", ds.name)
 
     mpath = cfg.marker_matrix or find_marker_matrix(ds.name, cfg.level)
+    auto_prior = False
+    needs_matrix = (not sup) or any(w.removesuffix("+vote") in PRIOR_METHODS for w in cfg.methods)
+    if mpath is None and cfg.auto_matrix and needs_matrix and ds.y is not None:
+        mpath = out_dir_for(cfg, ds.name) / "auto_marker_matrix.csv"
+        mpath.parent.mkdir(parents=True, exist_ok=True)
+        draft_matrix(X, ds.markers, ds.y).to_csv(mpath, float_format="%d")
+        auto_prior = True
+        log.warning("[%s] no marker decision matrix was given or bundled, so one was created from the dataset's own labels: %s. "
+                    "TACIT / Scyan / Astir / marker_score results that use it are circular (not independent prior knowledge). "
+                    "Pass --marker-matrix to use a real one, or --no-auto-matrix to skip those methods.", ds.name, mpath)
     matrix = load_marker_matrix(mpath) if mpath else None
     pseudo = ok = None
     if matrix is not None:
@@ -195,7 +232,8 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
         key = dict(dataset=ds.name, method=name, split=split_, fold=fold, fraction=fraction)
         row = dict(**key, tier=tier, mode=cfg.mode, impl=impl, n_train=n_train, n_test=NAN if df is None else len(df),
                    status=run["status"], error=(run.get("error") or "").strip().splitlines()[-1][:500] if run.get("error") else "",
-                   runtime_s=run.get("runtime_s", NAN), mem_mb=run.get("mem_mb"), device=device, pred_file=pred_file or "")
+                   runtime_s=run.get("runtime_s", NAN), mem_mb=run.get("mem_mb"), device=device, pred_file=pred_file or "",
+                   prior_source=(AUTO_NOTE if auto_prior else "supplied matrix") if name.removesuffix("+vote") in PRIOR_METHODS else "")
         lv_rows, cl_rows = [], []
         if df is not None and run["status"] == "ok":
             r, lv_rows, cl_rows = score(df, key)
@@ -270,7 +308,8 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 spec = m.spec
                 ctx = ScriptCtx(ws_all, out_dir / ("_runs" if spec.nested else base) / (base if spec.nested else cfg.level),
                                 cfg.script_runs, cfg.seed, device, n_classes,
-                                Path(cfg.marker_matrix) if cfg.marker_matrix else None, has_area="area" in ds.meta)
+                                Path(cfg.marker_matrix) if cfg.marker_matrix else (Path(mpath) if auto_prior else None),
+                                has_area="area" in ds.meta)
                 if spec.mode == "folds":                                  # e.g. MAPS: reads the repo's fold dir (cv only)
                     if not folds:
                         return skip("no training folds")
@@ -364,7 +403,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
         return recs
 
     wanted_all = list(dict.fromkeys(cfg.methods))
-    bases = list(dict.fromkeys(w.removesuffix("+vote") for w in wanted_all))
+    bases = order_methods(list(dict.fromkeys(w.removesuffix("+vote") for w in wanted_all)), cfg.order)
     log.info("[%s] %d methods queued, %d at a time: %s", ds.name, len(bases), max(cfg.jobs, 1), ", ".join(bases))
     with ThreadPoolExecutor(max(cfg.jobs, 1)) as ex:
         outs = [o for part in ex.map(lambda b: run_method(b, {w for w in wanted_all if w.removesuffix("+vote") == b}), bases) for o in part]
