@@ -75,6 +75,8 @@ class BenchConfig:
     level: str = "level3"
     marker_matrix: str | None = None
     order: str = "fast-first"             # fast-first | slow-first | listed (queue order of the methods)
+    tacit_r: int = 10
+    tacit_p: int = 10
     auto_matrix: bool = True               # build a draft decision matrix from the labels when a marker method has none
     max_cells: int = 0
     timeout: float = 0.0
@@ -309,7 +311,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 ctx = ScriptCtx(ws_all, out_dir / ("_runs" if spec.nested else base) / (base if spec.nested else cfg.level),
                                 cfg.script_runs, cfg.seed, device, n_classes,
                                 Path(cfg.marker_matrix) if cfg.marker_matrix else (Path(mpath) if auto_prior else None),
-                                has_area="area" in ds.meta)
+                                has_area="area" in ds.meta, tacit_r=cfg.tacit_r, tacit_p=cfg.tacit_p)
                 if spec.mode == "folds":                                  # e.g. MAPS: reads the repo's fold dir (cv only)
                     if not folds:
                         return skip("no training folds")

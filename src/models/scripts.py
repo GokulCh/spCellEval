@@ -26,7 +26,7 @@ import pandas as pd
 from ..repo import METHODS, ROOT
 from ..preprocessing.workspace import Workspace
 from .base import MethodUnavailable, register_external
-from .marker import find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml
+from .marker import conform_matrix, find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml
 
 CONFIG = ROOT / "configs" / "script_methods.json"
 CLASSIC_KWARGS = {"logistic_regression": "logistic_regression_model_kwargs_gridsearch.json",
@@ -45,6 +45,8 @@ class ScriptCtx:
     marker_matrix: Path | None = None           # user-supplied decision matrix (csv)
     resolutions: tuple = (0.5, 0.8, 1.0, 2.0)
     has_area: bool = False
+    tacit_r: int = 10                           # TACIT resolution (microclusters of ~0.1-0.5% of the cells each)
+    tacit_p: int = 10                           # TACIT number of dimensions for the microclusters
 
     @property
     def dataset(self) -> str:
@@ -81,6 +83,17 @@ def _csv_matrix(ctx: ScriptCtx, prefer: str) -> Path:
     return Path(p)
 
 
+def _conformed(ctx: ScriptCtx, prefer: str) -> pd.DataFrame:
+    """The decision matrix with its marker columns renamed to this dataset's exact marker names."""
+    m = load_marker_matrix(_csv_matrix(ctx, prefer))
+    m, dropped = conform_matrix(m, ctx.ws.markers)
+    if m.shape[1] == 0:
+        raise MethodUnavailable("no column of the decision matrix matches this dataset's marker names")
+    if dropped:
+        print(f"{ctx.dataset}: decision-matrix columns with no matching marker were ignored: {', '.join(dropped)}")
+    return m
+
+
 def _astir_yaml(ctx: ScriptCtx) -> Path:
     if ctx.marker_matrix is None:
         y = find_bundled(ctx.dataset, "astir", "cell_types_{ds}.yml")
@@ -89,7 +102,8 @@ def _astir_yaml(ctx: ScriptCtx) -> Path:
     m = ctx.marker_matrix or find_marker_matrix(ctx.dataset, ctx.ws.level)
     if m is None:
         raise MethodUnavailable(f"needs a marker file: no astir yml bundled for '{ctx.dataset}' and no --marker-matrix")
-    return to_astir_yaml(load_marker_matrix(m), ctx.ws.root / "astir_markers.yml")
+    cm, _ = conform_matrix(load_marker_matrix(m), ctx.ws.markers)
+    return to_astir_yaml(cm, ctx.ws.root / "astir_markers.yml")
 
 
 def _tribus_xlsx(ctx: ScriptCtx) -> Path:
@@ -110,17 +124,26 @@ def _flowsom(c: ScriptCtx) -> list[str]:
 
 
 def _tacit(c: ScriptCtx) -> list[str]:
-    m = pd.read_csv(_csv_matrix(c, "TACIT"))
-    m = m.rename(columns={m.columns[0]: "cell_type"})                  # the bundled TACIT matrices use this header
-    (c.ws.root / "tacit_matrix.csv").parent.mkdir(parents=True, exist_ok=True)
-    m.to_csv(c.ws.root / "tacit_matrix.csv", index=False)
-    return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(c.ws.root / "tacit_matrix.csv"),
-            "--separate_col", c.ws.split_col, "--output_path", str(c.out), "-n", str(c.n_runs)]
+    """TACIT's TYPExMARKER: first column 'cell_type', marker columns named exactly like the data, values 0..1 (1 = marker
+    defines the type, blank = unused). It has no negative markers, so -1 entries of Scyan-style matrices become 0."""
+    m = _conformed(c, "TACIT").clip(lower=0)
+    m.index.name = "cell_type"
+    path = c.ws.root / "tacit_matrix.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    m.to_csv(path)
+    return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(path),
+            "--separate_col", c.ws.split_col, "--output_path", str(c.out), "-n", str(c.n_runs),
+            "-r", str(c.tacit_r), "-p", str(c.tacit_p)]
 
 
 def _scyan(c: ScriptCtx) -> list[str]:
+    m = _conformed(c, "scyan")
+    m.index.name = "Populations"
+    path = c.ws.root / "scyan_matrix.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    m.to_csv(path)
     return ["--dataset_path", str(c.ws.quant), "--split_col", c.ws.split_col, "--decision_matrix_path",
-            str(_csv_matrix(c, "scyan")), "--granularity_level", c.ws.level, "--output_path", str(c.out),
+            str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu"]
 
 

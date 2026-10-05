@@ -570,3 +570,36 @@ def test_queue_order_fast_first_slow_first_and_unrunnable_first(monkeypatch):
     assert slow[0] == "cellsighter" and slow[1] == "leiden" and slow.index("random_forest") < slow.index("spade")
     assert order_methods(names, "listed") == names
     assert set(fast) == set(slow) == set(names)
+
+
+# ------------------------------------------------------------------ TACIT matrix format (from the TACIT repo)
+def _raw_name_matrix(tmp_path):
+    m = pd.DataFrame({"CD68 - macrophage:Cyc_2_ch_2": [1, None, -1], "CD20 - B cell:Cyc_3_ch_1": [None, 1, None],
+                      "PanCK - tumor:Cyc_4_ch_1": [None, None, 1], "Mystery - none:Cyc_9_ch_9": [1, 1, 1]},
+                     index=pd.Index(["M1_Macrophage", "B_cell", "Cancer"], name="Populations"))
+    f = tmp_path / "raw_names.csv"
+    m.to_csv(f)
+    return f
+
+
+def test_conform_matrix_maps_raw_signature_names_to_the_datasets_markers(tmp_path):
+    from src.models.marker import conform_matrix, load_marker_matrix
+    m, dropped = conform_matrix(load_marker_matrix(_raw_name_matrix(tmp_path)), MARKERS)
+    assert list(m.columns) == ["CD68", "CD20", "PanCK"] and dropped == ["Mystery - none:Cyc_9_ch_9"]
+    assert m.loc["M1_Macrophage", "CD68"] == 1 and m.loc["Cancer", "CD68"] == -1
+
+
+def test_tacit_adapter_writes_the_matrix_format_tacit_expects(data, tmp_path, capsys):
+    from src.preprocessing import build_workspace, load_dataset, transform
+    ds = transform(load_dataset(data[0]))
+    ws = build_workspace(ds, ds.y, tmp_path / "ws", make_folds=False)
+    ctx = scripts_mod.ScriptCtx(ws, tmp_path / "out", marker_matrix=_raw_name_matrix(tmp_path), tacit_r=200, tacit_p=20)
+    args = scripts_mod._tacit(ctx)
+    written = pd.read_csv(args[args.index("--decision_matrix_path") + 1])
+    assert list(written.columns) == ["cell_type", "CD68", "CD20", "PanCK"]          # first column cell_type; names = the data's columns
+    assert (written[["CD68", "CD20", "PanCK"]].fillna(0) >= 0).all().all()          # TACIT has no negative markers: -1 became 0
+    assert args[args.index("-r") + 1] == "200" and args[args.index("-p") + 1] == "20"
+    assert "Mystery" in capsys.readouterr().out                                    # an unmatched column is reported, not silently used
+    sc = scripts_mod._scyan(ctx)                                                   # Scyan gets the same conformed names (and keeps -1)
+    s_m = pd.read_csv(sc[sc.index("--decision_matrix_path") + 1], index_col=0)
+    assert list(s_m.columns) == ["CD68", "CD20", "PanCK"] and s_m.loc["Cancer", "CD68"] == -1

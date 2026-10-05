@@ -68,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--batch-correct", choices=["none", "median"], default="none")
         sp.add_argument("--level", choices=["level1", "level2", "level3"], default="level3")
         sp.add_argument("--marker-matrix", help="decision matrix CSV (default: bundled one matching the dataset name)")
+        sp.add_argument("--tacit-resolution", type=int, default=10, help="TACIT resolution r (microclusters of ~0.1-0.5%% of the cells; the TACIT paper used 200 for the CRC dataset)")
+        sp.add_argument("--tacit-dims", type=int, default=10, help="TACIT dimensions p for the microclusters (the paper used 20 for CRC)")
         sp.add_argument("--no-auto-matrix", action="store_true",
                         help="do not create a draft decision matrix from the labels when TACIT / Scyan / Astir / marker_score have none")
         sp.add_argument("--max-cells", type=int, default=0, help="random subsample for quick runs (0 = all)")
@@ -338,7 +340,7 @@ def cmd_run(a) -> None:
         kfold_method=a.kfold_method, script_runs=a.script_runs, fractions=tuple(float(f) for f in a.fractions.split(",")),
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
-        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
+        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
         device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None))
     res = run_benchmark(cfg)
     if res.empty:

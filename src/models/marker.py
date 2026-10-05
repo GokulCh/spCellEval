@@ -115,3 +115,26 @@ def draft_matrix(X, markers, y, top: int = 3, min_z: float = 1.0) -> pd.DataFram
         for mk in best[best >= min_z].index[:top]:
             m.loc[t, mk] = 1.0
     return m
+
+
+def clean_marker_name(col: str) -> str:
+    """The cleaning rule of datasets/process_crc_codex.py: 'CD31 - vasculature:Cyc_19_ch_3' -> 'CD31'."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(col).split(" - ")[0].split(":")[0])
+
+
+def conform_matrix(matrix: pd.DataFrame, markers: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    """Rename the matrix's marker columns to the dataset's exact marker names (tolerating case / punctuation and the raw
+    '<marker> - <description>:Cyc_<n>_ch_<n>' names used in published signature files). Columns that match no marker
+    are dropped and returned. Columns that map to the same marker are merged (max)."""
+    target = {_key(m): m for m in markers}
+    rename, dropped = {}, []
+    for c in matrix.columns:
+        hit = next((target[_key(x)] for x in (c, clean_marker_name(c)) if _key(x) in target), None)
+        if hit is None:
+            dropped.append(str(c))
+        else:
+            rename[c] = hit
+    m = matrix[list(rename)].rename(columns=rename)
+    if m.columns.duplicated().any():
+        m = m.T.groupby(level=0, sort=False).max().T
+    return m, dropped
