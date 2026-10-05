@@ -92,7 +92,11 @@ def main(args):
         print("Num of classes: ", num_classes)   
     
         model = Trainer(results_dir = args.results_dir, num_features= num_features, num_classes=num_classes, batch_size=batch_size, max_epochs=max_epochs, min_epochs=min_epochs, patience=patience, verbose=verbose)
-        model.fit(train_data, val_data)
+        # the MAPS Trainer takes CSV paths (fit/predict), not DataFrames: write the cleaned tables out first
+        paths = {k: os.path.join(args.results_dir, f'_maps_{k}_fold{fold_number}.csv') for k in ('train', 'val', 'test')}
+        for k, d in (('train', train_data), ('val', val_data), ('test', test_data)):
+            d.to_csv(paths[k], index=False)
+        model.fit(paths['train'], paths['val'])
 
         #get the time taken for each fold
         end_time = time.time()
@@ -104,7 +108,7 @@ def main(args):
         #get infernce time
         start_inference_time = time.time()
         # Make predictions on the test data
-        pred_labels, pred_probs = model.predict(test_data)
+        pred_labels, pred_probs = model.predict(paths['test'])
 
         end_inference_time = time.time()
         inference_time = end_inference_time - start_inference_time
