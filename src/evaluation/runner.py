@@ -285,9 +285,9 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                     runs.append(("cv", lambda: ws_tr.root, None, None))
                 for j in units:
                     if j["split"] == "holdout":
-                        runs.append(("holdout", lambda: make_variant(ws_tr, "h", 0), None, None))
+                        runs.append(("holdout", lambda: make_variant(ws_tr, f"{base}_h", 0), None, None))
                     if j["split"] == "progressive":
-                        runs.append(("progressive", lambda j=j: make_variant(ws_tr, f"p{j['fraction']}", 0, j["tr"]), j["fraction"], j))
+                        runs.append(("progressive", lambda j=j: make_variant(ws_tr, f"{base}_p{j['fraction']}", 0, j["tr"]), j["fraction"], j))
                 for sp, root_fn, fr, j in runs:
                     try:
                         r = run_classic(base, root_fn(), ws_tr, cfg.seed, cfg.n_jobs_model, cfg.timeout)

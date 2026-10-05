@@ -95,7 +95,7 @@ def main(args):
         # the MAPS Trainer takes CSV paths (fit/predict), not DataFrames: write the cleaned tables out first
         paths = {k: os.path.join(args.results_dir, f'_maps_{k}_fold{fold_number}.csv') for k in ('train', 'val', 'test')}
         for k, d in (('train', train_data), ('val', val_data), ('test', test_data)):
-            d.to_csv(paths[k], index=False)
+            d.rename(columns={'encoded_phenotype': 'cell_label'}).to_csv(paths[k], index=False)   # MAPS reads the label from 'cell_label'
         model.fit(paths['train'], paths['val'])
 
         #get the time taken for each fold

@@ -38,6 +38,7 @@ JOBS=${JOBS:-$(( CPUS / 2 ))}                     # methods running at the same 
 # time, so it can be much larger than CPUS/JOBS without oversubscribing the allocation in practice.
 THREADS=${THREADS:-$(( CPUS / 8 ))}
 [ "$THREADS" -lt 1 ] && THREADS=1
+TIMEOUT=${TIMEOUT:-14400}                         # seconds per method run; Astir / Scyan / STARLING exceeded 3600 on ~200k cells
 ORDER=${ORDER:-fast-first}                        # fast-first: quick results early | slow-first: usually the shortest total time | listed
 
 MARKER_MATRIX=${MARKER_MATRIX-data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv}   # unset -> the bundled file; set but empty -> none
@@ -51,6 +52,6 @@ echo "cpus=$CPUS jobs=$JOBS threads-per-multithreaded-method=$THREADS order=$ORD
   --data "$DATA" \
   --modality crc_tma --transform none \
   --stages benchmark,visualize --split all --methods all \
-  --timeout 3600 --jobs "$JOBS" --model-threads "$THREADS" --order "$ORDER" --script-runs 3 \
+  --timeout "$TIMEOUT" --jobs "$JOBS" --model-threads "$THREADS" --order "$ORDER" --script-runs 3 \
   "${EXTRA[@]}" \
   --out "$OUT"
