@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -363,26 +364,48 @@ def test_splits_only_stage_and_relative_out_path(data, tmp_path, monkeypatch):
 
 
 @needs_xgb
-def test_benchmark_reuses_existing_folds_and_rebuilds_when_settings_differ(data, tmp_path, capsys):
+def test_splits_live_next_to_the_data_and_are_reused(data, tmp_path, capsys):
+    main = tmp_path / "data"
+    proc = main / "datasets" / "toy" / "quantification" / "processed"
+    proc.mkdir(parents=True)
+    csv = proc / "toy_quantification.csv"
+    shutil.copy(data[0], csv)
+    before = csv.read_bytes()
+    common = ["--data", str(csv), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv"]
+    # 1. splits only: written into the dataset's own processed folder, the user's csv is not touched
+    assert cli.main(["pipeline", *common, "--stages", "preprocess", "--out", str(tmp_path / "out"), "--fractions", "0.05,0.5"]) == 0
+    kd = "kfolds_StratifiedKFold_level3"
+    assert (proc / kd / "fold_5_test.csv").exists() and (proc / "labels_StratifiedKFold_level3.csv").exists()
+    for v in ("h", "p0.05", "p0.5"):                                        # hold-out + progressive, next to the data too
+        assert (main / "splits" / v / "datasets" / "toy" / "quantification" / "processed" / kd / "fold_1_test.csv").exists(), v
+    assert csv.read_bytes() == before
+    assert capsys.readouterr().out.count("5 folds created") == 1
+    # 2. a later benchmark finds and reuses them
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots"]) == 0
+    t = capsys.readouterr().out
+    assert "reusing the folds already created" in t and "5 folds created" not in t
+    assert (pd.read_csv(tmp_path / "b" / "benchmark_results.csv").status == "ok").all()
+    # 3. different seed: mismatch is reported, the folds are replaced, the csv is still untouched
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "c"), "--no-plots", "--seed", "7"]) == 0
+    t = capsys.readouterr().out
+    assert "do not match this run (seed differ)" in t and "5 folds created" in t
+    assert csv.read_bytes() == before
+
+
+@needs_xgb
+def test_preprocess_then_benchmark_in_one_pipeline_creates_folds_once(data, tmp_path, capsys):
     common = ["--data", str(data[0]), "--modality", "codex", "--methods", "svm,random_forest", "--split", "cv"]
-    # preprocess + benchmark in one pipeline: folds are created once, then linked
     assert cli.main(["pipeline", *common, "--stages", "preprocess,benchmark", "--out", str(tmp_path / "a")]) == 0
     txt = capsys.readouterr().out
     assert txt.count("5 folds created") == 1 and "reusing the folds already created" in txt
-    k = tmp_path / "a" / "toy" / "workspace" / "datasets" / "toy" / "quantification" / "processed" / "kfolds_StratifiedKFold_level3"
-    assert (k / "fold_3_test.csv").read_text() == (tmp_path / "a" / "preprocessed" / "toy" / "workspace" / "datasets" / "toy"
-                                                    / "quantification" / "processed" / "kfolds_StratifiedKFold_level3" / "fold_3_test.csv").read_text()
     r = pd.read_csv(tmp_path / "a" / "benchmark_results.csv")
     assert (r.status == "ok").all() and set(r.method) == {"svm", "random_forest"}
-    # a later, separate benchmark can point at the exported splits
-    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots",
-                     "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
-    assert "reusing the folds already created" in capsys.readouterr().out
-    # different seed -> fingerprint differs -> new folds, said out loud
-    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "c"), "--no-plots", "--seed", "7",
-                     "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
-    txt = capsys.readouterr().out
-    assert "do not match this run (seed differ)" in txt and "5 folds created" in txt
+    # folds made before fingerprints existed are verified from their files instead
+    store = tmp_path / "a" / "preprocessed" / "toy" / "workspace"
+    (store / "datasets" / "toy" / "quantification" / "processed" / "spc_fingerprint_StratifiedKFold_level3.json").unlink()
+    assert cli.main(["benchmark", *common, "--out", str(tmp_path / "b"), "--no-plots", "--splits-dir", str(tmp_path / "a" / "preprocessed")]) == 0
+    t = capsys.readouterr().out
+    assert "older folds" in t and "verified" in t and "5 folds created" not in t
 
 
 # ------------------------------------------------------------------ raw table conversion (repo's process_crc_codex.py)

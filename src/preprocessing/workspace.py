@@ -8,6 +8,12 @@ r"""Materialise a dataset in the benchmark's own on-disk layout and create folds
 Folds, label encoding and the validation split are all produced by the repository's ``run_fold_creation``
 (``DataSetHandler``); nothing here re-implements them. Every row carries ``spc_row`` (its position in the
 loaded dataset) so predictions written by any script can be mapped back to the in-memory matrix.
+
+Splits store. The folds can live permanently next to the data, in the repo's own ``<main_dir>/datasets/<name>/
+quantification/processed/`` (``store``). Only the fold directory, the labels file and a small fingerprint file are
+written there - the user's own ``<name>_quantification.csv`` is never touched. A run first looks for matching folds
+in the store (data values, labels, seed, fold method, fold count and validation fraction must all match) and links
+them; otherwise it creates the folds and publishes them to the store for next time.
 """
 from __future__ import annotations
 
@@ -36,8 +42,7 @@ class Workspace:
     markers: list[str]
     n_rows: int
     has_folds: bool
-    reused: bool = False                      # folds were linked from an earlier run (see build_workspace reuse_from)
-    reuse_src: Path | None = None
+    reused: bool = False                      # the folds came from the splits store instead of being created
 
     @property
     def dataset_dir(self) -> Path:            # what run_classic_ml_default.py calls --dataset_path
@@ -60,6 +65,10 @@ class Workspace:
         return self.proc / f"labels_{self.kfold_method}_{self.level}.csv"
 
     @property
+    def fingerprint_file(self) -> Path:
+        return self.proc / f"spc_fingerprint_{self.kfold_method}_{self.level}.json"
+
+    @property
     def split_col(self) -> str:               # first non-marker column (scyan / TACIT / starling convention)
         return "spc_row"
 
@@ -76,6 +85,36 @@ class Workspace:
                 break
             out.append({k: pd.read_csv(p, usecols=["spc_row"]).spc_row.to_numpy() for k, p in f.items() if p.exists()})
         return out
+
+
+# ----------------------------------------------------------------------------- splits store
+def infer_main_dir(data_path: str | Path) -> Path | None:
+    """<main_dir> if the file sits in the repo's ``<main_dir>/datasets/<name>/quantification/processed/`` layout."""
+    p = Path(data_path).resolve()
+    parts = p.parent.parts
+    if len(parts) >= 5 and parts[-1] == "processed" and parts[-2] == "quantification" and parts[-4] == "datasets":
+        return p.parents[4]
+    return None
+
+
+def resolve_store(splits_dir: str | None, data_path: str | Path, ds_name: str, fallback_root: str | Path | None = None) -> Path | None:
+    """Where the folds should live.
+
+    splits_dir: None/'auto' -> next to the data if it is in the repo layout, else a ``preprocess`` run's workspace under
+                ``fallback_root/<ds>/workspace`` if one exists; 'out' -> nowhere (folds stay inside the output folder);
+                a path -> that folder (a <main_dir>, or an older ``preprocessed`` folder holding <ds>/workspace).
+    """
+    if splits_dir == "out":
+        return None
+    if splits_dir and splits_dir != "auto":
+        p = Path(splits_dir).resolve()
+        return p / ds_name / "workspace" if (p / ds_name / "workspace" / "datasets").is_dir() else p
+    m = infer_main_dir(data_path)
+    if m is not None:
+        return m
+    if fallback_root is not None and (Path(fallback_root) / ds_name / "workspace" / "datasets").is_dir():
+        return (Path(fallback_root) / ds_name / "workspace").resolve()
+    return None
 
 
 def _link(src: Path, dst: Path) -> None:
@@ -106,34 +145,82 @@ def fingerprint(ds: Dataset, labels, rows, level, kfold_method, seed, n_splits, 
                 rows_md5=h(np.asarray(rows, dtype=np.int64)))
 
 
+def _legacy_mismatch(src: Workspace, ds: Dataset, labels, rows, level: str, n_splits: int) -> str | None:
+    """None if an older split directory without a fingerprint file provably belongs to this data, else the reason."""
+    cols = list(ds.markers) + ["spc_row", LEVEL_COLUMN[level]]
+    try:
+        t = pd.read_csv(src.quant, usecols=cols)
+    except ValueError:
+        return "no fingerprint and the stored table has no spc_row column, so it cannot be verified"
+    if len(t) != len(rows) or not np.array_equal(t.spc_row.to_numpy(), rows):
+        return "different cells"
+    if not np.array_equal(t[LEVEL_COLUMN[level]].astype(str).to_numpy(), np.asarray(labels)[rows].astype(str)):
+        return "different labels"
+    if not np.allclose(t[list(ds.markers)].to_numpy(float), ds.X.iloc[rows].to_numpy(float), rtol=1e-4, atol=1e-6):
+        return "different marker values (another transform?)"
+    folds = src.folds()
+    if len(folds) != n_splits:
+        return f"{len(folds)} folds, not {n_splits}"
+    if not np.array_equal(np.sort(np.concatenate([f["test"] for f in folds])), np.sort(rows)):
+        return "folds do not cover the cells exactly once"
+    return None
+
+
+def _try_reuse(ws: Workspace, st: Workspace, fp: dict, ds: Dataset, labels, rows, level, n_splits) -> bool:
+    """Link matching folds from the store into the workspace. Prints why not when it cannot."""
+    if not (st.kdir.exists() and st.labels.exists()):
+        print(f"{ds.name}: no folds in {st.proc} yet; creating them")
+        return False
+    if st.fingerprint_file.exists():
+        old = json.loads(st.fingerprint_file.read_text())
+        diff = [k for k in fp if old.get(k) != fp[k]]
+        if diff:
+            print(f"{ds.name}: folds in {st.proc} do not match this run ({', '.join(diff)} differ); "
+                  "creating new folds and replacing them")
+            return False
+        how = "data, labels and settings match"
+    else:
+        why = _legacy_mismatch(st, ds, labels, rows, level, n_splits)
+        if why is not None:
+            print(f"{ds.name}: older folds in {st.proc} cannot be reused ({why}); creating new folds and replacing them")
+            return False
+        how = f"older folds: table, labels and {n_splits} folds verified; the seed they were made with cannot be checked"
+    _link_tree(st.kdir, ws.kdir)
+    _link(st.labels, ws.labels)
+    ws.reused = True
+    print(f"{ds.name}: reusing the folds already created in {st.proc} ({how})")
+    return True
+
+
+def _publish(ws: Workspace, st: Workspace) -> None:
+    """Move freshly created folds into the store and link them back into the workspace (no duplicate copies)."""
+    st.proc.mkdir(parents=True, exist_ok=True)
+    for src, dst in ((ws.kdir, st.kdir), (ws.labels, st.labels), (ws.fingerprint_file, st.fingerprint_file)):
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        elif dst.exists() or dst.is_symlink():
+            dst.unlink()
+        shutil.move(str(src), str(dst))
+    _link_tree(st.kdir, ws.kdir)
+    _link(st.labels, ws.labels)
+    _link(st.fingerprint_file, ws.fingerprint_file)
+    print(f"{ws.name}: folds saved in {st.kdir} (labels: {st.labels.name})")
+
+
+# ----------------------------------------------------------------------------- workspace
 def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, level: str = "level3",
                     kfold_method: str = "StratifiedKFold", seed: int = 0, n_splits: int = 5,
                     val_pct: float = 0.15, rows: np.ndarray | None = None, make_folds: bool = True,
-                    extra: dict[str, np.ndarray] | None = None, reuse_from: str | Path | None = None) -> Workspace:
+                    extra: dict[str, np.ndarray] | None = None, store: str | Path | None = None) -> Workspace:
     """Write the quantification table (+ folds via the repo's ``run_fold_creation``).
 
     labels: label at ``level`` for every cell (true labels, or marker pseudo-labels in unsupervised mode).
     rows:   positions of the cells to include (default all); ``extra`` adds metadata columns (full-length arrays).
-    reuse_from: a workspace root from an earlier ``preprocess`` run. If its fingerprint (data, labels, seed, fold method,
-                folds) matches, its table, folds and labels are linked here instead of being recreated.
+    store:  a <main_dir> holding the splits (see module docstring): matching folds are linked from it, otherwise the
+            new folds are published to it. Its own quantification table is never modified.
     """
     rows = np.arange(len(ds)) if rows is None else np.asarray(rows)
     ws = Workspace(Path(root).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), make_folds and labels is not None)
-    fp = fingerprint(ds, labels, rows, level, kfold_method, seed, n_splits, val_pct) if ws.has_folds else None
-    if reuse_from and ws.has_folds:
-        src = Workspace(Path(reuse_from).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), True)
-        fpf = src.proc / "spc_fingerprint.json"
-        if fpf.exists() and src.quant.exists() and src.kdir.exists() and src.labels.exists():
-            old = json.loads(fpf.read_text())
-            if old == fp:
-                _link_tree(src.proc, ws.proc)
-                ws.reused, ws.reuse_src = True, src.root
-                print(f"{ds.name}: reusing the folds already created in {src.root} (data, labels and settings match)")
-                return ws
-            diff = [k for k in fp if old.get(k) != fp[k]]
-            print(f"{ds.name}: splits in {src.root} do not match this run ({', '.join(diff)} differ); creating new folds")
-        else:
-            print(f"{ds.name}: no usable splits found in {src.root}; creating new folds")
     X = ds.X.iloc[rows].reset_index(drop=True)
     meta = ds.meta.iloc[rows].reset_index(drop=True).copy()
     meta = meta.drop(columns=[c for c in meta if c in ("spc_row", *LEVEL_COLUMN.values())], errors="ignore")
@@ -141,7 +228,6 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
     if labels is not None:
         keep_levels[LEVEL_COLUMN[level]] = np.asarray(labels)[rows]
         if ds.y is not None and np.array_equal(np.asarray(labels), ds.y):      # true labels: also keep coarser levels
-            from ..evaluation.repo_assets import to_level
             from ..evaluation.analysis import level_labels
             for lv, y in level_labels(ds, level).items():
                 keep_levels[LEVEL_COLUMN[lv]] = np.asarray(y)[rows]
@@ -158,30 +244,38 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
     df = pd.concat([X, pd.DataFrame({"spc_row": rows}), meta], axis=1)
     ws.proc.mkdir(parents=True, exist_ok=True)
     df.to_csv(ws.quant, index=False)
-    if ws.has_folds:
-        run_fold_creation = load_module(UTILS / "run_kfold_creator.py", "run_kfold_creator").run_fold_creation
-        run_fold_creation(str(ws.root), ws.name, dropna=False, impute_value=None,
-                          phenotype_column=LEVEL_COLUMN[level],
-                          batch_identifier_column="image" if "image" in df else None, drop_columns=None,
-                          drop_non_numerical=False, n_splits=n_splits, method=kfold_method,
-                          group_shuffle_split_size=0.5, swap_train_test=False, random_state=seed,
-                          percentage_validation=val_pct)
-        (ws.proc / "spc_fingerprint.json").write_text(json.dumps(fp))
+    if not ws.has_folds:
+        return ws
+
+    fp = fingerprint(ds, labels, rows, level, kfold_method, seed, n_splits, val_pct)
+    st = None
+    if store is not None and Path(store).resolve() != ws.root:
+        st = Workspace(Path(store).resolve(), ds.name, level, kfold_method, list(ds.markers), len(rows), True)
+        if _try_reuse(ws, st, fp, ds, labels, rows, level, n_splits):
+            return ws
+    run_fold_creation = load_module(UTILS / "run_kfold_creator.py", "run_kfold_creator").run_fold_creation
+    run_fold_creation(str(ws.root), ws.name, dropna=False, impute_value=None,
+                      phenotype_column=LEVEL_COLUMN[level],
+                      batch_identifier_column="image" if "image" in df else None, drop_columns=None,
+                      drop_non_numerical=False, n_splits=n_splits, method=kfold_method,
+                      group_shuffle_split_size=0.5, swap_train_test=False, random_state=seed,
+                      percentage_validation=val_pct)
+    ws.fingerprint_file.write_text(json.dumps(fp))
+    if st is not None:
+        _publish(ws, st)
     return ws
 
 
-def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray | None = None) -> Path:
+def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray | None = None,
+                 variants_root: str | Path | None = None) -> Path:
     """A single-fold copy of the dataset dir (for hold-out / progressive runs of the repo's classic-ML script).
 
     Returns the variant root to pass as ``--main_dir``. ``train_rows`` (spc_row ids) subsamples the fold's train file.
+    ``variants_root`` (default ``<workspace>/v``) is where the variants are written.
     """
-    vroot = ws.root / "v" / name / "datasets" / ws.name      # short names: Windows MAX_PATH
+    base = Path(variants_root).resolve() if variants_root else ws.root / "v"
+    vroot = base / name / "datasets" / ws.name               # short names: Windows MAX_PATH
     kd = vroot / "quantification" / "processed" / ws.kdir.name
-    if ws.reuse_src is not None:                             # variant already written by the earlier preprocess run?
-        done = ws.reuse_src / "v" / name
-        if (done / "datasets" / ws.name / "quantification" / "processed" / ws.kdir.name / "fold_1_train.csv").exists():
-            _link_tree(done, ws.root / "v" / name)
-            return ws.root / "v" / name
     kd.mkdir(parents=True, exist_ok=True)
     shutil.copy(ws.labels, kd.parent / ws.labels.name)
     for part in ("train", "validation", "test"):

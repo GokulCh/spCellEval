@@ -57,8 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--kfold-method", choices=["StratifiedKFold", "StratifiedGroupKFold", "GroupShuffleSplit"],
                         default="StratifiedKFold", help="fold method of the repo's DataSetHandler")
         sp.add_argument("--fractions", default=FRACTIONS, help="progressive training fractions of the dataset")
-        sp.add_argument("--splits-dir", help="reuse folds from an earlier `preprocess` run (its --out/preprocessed folder); "
-                                             "used only if the data, labels and split settings match")
+        sp.add_argument("--splits-dir", help="where the folds live: a <main_dir> such as data/ (folds go in <main_dir>/datasets/<name>/quantification/"
+                                             "processed/, your csv is never touched). Default 'auto': next to your data when it sits in that layout. "
+                                             "'out': keep the folds inside --out only. Existing folds are reused only if data and settings match.")
         sp.add_argument("--script-runs", type=int, default=1, help="repeats for repo scripts that support n_runs (stability needs > 1)")
         sp.add_argument("--modality", choices=MODALITIES, default="codex")
         sp.add_argument("--transform", choices=["auto", "arcsinh", "log1p", "none"], default="auto")
@@ -114,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
                   ("--batch-correct", dict(choices=["none", "median"], default="none")),
                   ("--level", dict(choices=["level1", "level2", "level3"], default="level3")),
                   ("--folds", dict(type=int, default=5)), ("--fractions", dict(default=FRACTIONS)),
+                  ("--splits-dir", dict(default=None, help="where the folds live (see `benchmark --help`)")),
                   ("--kfold-method", dict(choices=["StratifiedKFold", "StratifiedGroupKFold", "GroupShuffleSplit"], default="StratifiedKFold")),
                   ("--seed", dict(type=int, default=0))]:
         sp.add_argument(a, **kw)
@@ -212,21 +214,25 @@ def cmd_convert(a) -> list[str]:
 def cmd_preprocess(a) -> None:
     """Splits only: the 5 folds (repo's run_kfold_creator), the 80/20 hold-out and the progressive training subsets."""
     from src.preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
+    from src.preprocessing.workspace import resolve_store
     for path in a.data:
         ds = transform(load_dataset(path, modality=a.modality, level=a.level), a.transform, a.cofactor,
                        a.normalize, a.batch_correct)
+        store = resolve_store(getattr(a, "splits_dir", None), path, ds.name)
         ws = build_workspace(ds, ds.y, Path(a.out) / ds.name / "workspace", a.level, a.kfold_method, a.seed, a.folds,
-                             make_folds=ds.y is not None)
-        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers -> {ws.proc}")
+                             make_folds=ds.y is not None, store=store)
+        print(f"{ds.name}: {len(ds)} cells x {len(ds.markers)} markers; working table: {ws.quant}")
         if not ws.has_folds:
             continue
-        print(f"  {a.folds}-fold CV (+ labels + validation sets, repo's run_kfold_creator): {ws.kdir.name}")
+        home = store if store is not None else ws.root
+        print(f"  {a.folds}-fold CV (+ labels + validation sets, repo's run_kfold_creator): {home / 'datasets' / ds.name / 'quantification' / 'processed' / ws.kdir.name}")
         folds = ws.folds()
-        make_variant(ws, "h", 0)
-        print(f"  80/20 hold-out (= fold 1): {ws.root / 'v' / 'h'}")
+        vroot = (store / "splits") if store is not None else None
+        make_variant(ws, "h", 0, variants_root=vroot)
+        print(f"  80/20 hold-out (= fold 1): {(vroot or ws.root / 'v') / 'h'}")
         for fr, sub in progressive(folds[0]["train"], ds.y, len(ds), [float(f) for f in a.fractions.split(",")], a.seed):
-            make_variant(ws, f"p{fr}", 0, sub)
-            print(f"  progressive {fr:g}: {len(sub)} training cells -> {ws.root / 'v' / f'p{fr}'}")
+            make_variant(ws, f"p{fr}", 0, sub, variants_root=vroot)
+            print(f"  progressive {fr:g}: {len(sub)} training cells -> {(vroot or ws.root / 'v') / f'p{fr}'}")
 
 
 def cmd_analyze(a) -> None:
@@ -322,8 +328,7 @@ def cmd_pipeline(a) -> None:
     runners = {"convert": convert_stage,
                "analyze": lambda: cmd_analyze(ns()),
                "preprocess": lambda: cmd_preprocess(ns(out=str(out / "preprocessed"))),
-               "benchmark": lambda: cmd_run(ns(no_plots=True, splits_dir=a.splits_dir or (
-                   str(out / "preprocessed") if "preprocess" in stages and "preprocess" not in failed else None))),
+               "benchmark": lambda: cmd_run(ns(no_plots=True)),
                "visualize": lambda: cmd_visualize(ns(results=str(out)))}
     report, failed = [], set()
     for s in stages:
@@ -529,7 +534,7 @@ def wizard() -> list[str]:
                        "unsupervised": "clustering + marker pseudo-labels, QC metrics without ground truth"})
         argv += ["--mode", mode]
         if mode == "supervised" and "preprocess" not in stages:
-            sd = ask("Reuse splits from an earlier preprocess run? Folder (its <out>/preprocessed; blank = create new)", "",
+            sd = ask("Splits folder, e.g. data/ (blank = auto: next to your data if it is in data/datasets/<name>/quantification/processed)", "",
                      lambda s: s if (not s or Path(s).is_dir()) else (_ for _ in ()).throw(ValueError("folder not found")))
             if sd:
                 argv += ["--splits-dir", sd]

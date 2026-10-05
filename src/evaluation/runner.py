@@ -33,6 +33,7 @@ from ..models.spatial import spatial_vote
 from ..preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
 from ..preprocessing.data import LEVEL_COLUMN
 from ..preprocessing.splits import DEFAULT_FRACTIONS
+from ..preprocessing.workspace import resolve_store
 from .analysis import dataset_report, level_labels
 from .metrics import per_class_table, supervised_metrics, unsupervised_qc
 from .repo_assets import to_level
@@ -80,7 +81,7 @@ class BenchConfig:
     n_jobs_model: int = 1
     script_runs: int = 1                   # repeats for the repo scripts that support n_runs (stability needs > 1)
     save_predictions: bool = True
-    splits_dir: str | None = None          # reuse folds from an earlier `preprocess` run: <splits_dir>/<dataset>/workspace
+    splits_dir: str | None = None          # where the folds live: None/'auto', 'out', or a <main_dir> (see preprocessing.workspace)
 
 
 def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
@@ -116,9 +117,9 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     lab = ds.y if sup else (pseudo if pseudo is not None else ds.y)         # labels the methods see
     conf = np.ones(n, int) if (sup or ok is None) else ok.astype(int)
     extra = {"spc_confident": conf, **({} if ds.y is None or sup else {"gt_cell_type": ds.y})}
-    reuse = Path(cfg.splits_dir) / ds.name / "workspace" if (cfg.splits_dir and sup) else None
+    store = resolve_store(cfg.splits_dir, path, ds.name, Path(cfg.out).resolve() / "preprocessed") if sup else None
     ws_all = build_workspace(ds, lab, out_dir / "workspace", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
-                             make_folds=sup, extra=extra, reuse_from=reuse)
+                             make_folds=sup, extra=extra, store=store)
     ws_tr = ws_all if sup else None
     if not sup and (conf == 1).sum() >= cfg.folds * 10 and len(np.unique(lab[conf == 1])) >= 2:
         ws_tr = build_workspace(ds, lab, out_dir / "workspace_pseudo", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,

@@ -95,9 +95,13 @@ they are untested. Nothing has been run on the real benchmark datasets. `--devic
 Known limits: runtime for classic ML is the script's own fit+predict time; Harmony batch correction is not wired; the R
 `funky_heatmap.R` is fed via `funky_heatmap_input.csv` but not run.
 
-## Reusing splits
+## Where the splits live (splits store)
 
-`--stages preprocess,benchmark` creates the folds once: the benchmark links the files the preprocess stage wrote (symlinks,
-copy fallback). A standalone benchmark can do the same with `--splits-dir <out>/preprocessed`. Reuse happens only if a
-fingerprint of the data values, labels, seed, fold method, fold count and validation fraction matches; otherwise the reason is
-printed (for example `seed differ`) and new folds are created.
+If your table sits in the repo layout (`<main_dir>/datasets/<name>/quantification/processed/<name>_quantification.csv`, e.g.
+`data/datasets/crc_tma/...`), the preprocess stage writes the folds **there**, exactly where the repo's own scripts expect
+them: `kfolds_<method>_<level>/`, `labels_<method>_<level>.csv` and a small `spc_fingerprint_*.json`. Your csv is never
+modified. The 80/20 hold-out and the progressive subsets go to `<main_dir>/splits/<h|p0.01|...>/`. The benchmark stage then
+finds and reuses those folds (symlinks) as long as the data values, labels, seed, fold method, fold count and validation
+fraction match; otherwise it says what differs, creates new folds and replaces the stored ones. `--splits-dir <dir>` points
+elsewhere, `--splits-dir out` keeps everything inside `--out`. Folds from older runs without a fingerprint are verified
+against the data from their files (the seed they used cannot be checked).
