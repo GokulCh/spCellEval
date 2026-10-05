@@ -1,6 +1,7 @@
 #!/bin/bash
 # Submit with:   mkdir -p logs && sbatch slurm/run_pipeline.sbatch
 # Override without editing:   JOBS=6 ORDER=slow-first OUT=data/results/crc_tma_run2 sbatch slurm/run_pipeline.sbatch
+# Different environment:      PYTHON=/path/to/env/bin/python sbatch slurm/run_pipeline.sbatch   (find it with `which python` inside the env)
 #SBATCH --job-name=spceleval
 #SBATCH --output=logs/spceleval_%j.out
 #SBATCH --error=logs/spceleval_%j.out
@@ -13,8 +14,15 @@
 
 set -eo pipefail
 
-source /lustre/home/chaluvadig/anaconda3/etc/profile.d/conda.sh
-conda activate cta
+# The environment's own python: no `conda activate` / conda.sh needed (batch jobs do not load your shell setup).
+PYTHON=${PYTHON:-/lustre/home/chaluvadig/anaconda3/envs/cta/bin/python}
+if [ ! -x "$PYTHON" ]; then
+  echo "python not found: $PYTHON"
+  echo "Run 'which python' inside your activated environment and pass it:  PYTHON=<that path> sbatch slurm/run_pipeline.sbatch"
+  exit 1
+fi
+export PATH="$(dirname "$PYTHON"):$PATH"          # so the environment's Rscript (FlowSOM, TACIT) and other tools are found too
+
 cd /lustre/home/chaluvadig/VCU_HEALTH/spCellEval
 
 DATA=${DATA:-/lustre/home/chaluvadig/VCU_HEALTH/spCellEval/data/datasets/crc_tma/quantification/processed/crc_tma_quantification.csv}
@@ -25,9 +33,10 @@ CPUS=${SLURM_CPUS_PER_TASK:-16}
 THREADS=$(( CPUS / JOBS ))                        # threads inside each method (random forest, XGBoost, ...)
 [ "$THREADS" -lt 1 ] && THREADS=1
 
+echo "python=$PYTHON"
 echo "cpus=$CPUS jobs=$JOBS threads-per-method=$THREADS order=$ORDER out=$OUT"
 
-python -u cli.py pipeline \
+"$PYTHON" -u cli.py pipeline \
   --data "$DATA" \
   --modality crc_tma --transform none \
   --stages benchmark,visualize --split all --methods all \
