@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import threading
+import time
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -223,7 +225,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 out.append(emit(vname, impl, tier, split_, fold, fraction, vrun, vdf, None, vfile, ntr))
         return out
 
-    def run_method(base: str, wanted: set[str]):
+    def _run_method(base: str, wanted: set[str]):
         m = REGISTRY[base]
         skip = lambda why: [emit(nm, m.impl, m.tier, "not_run", 0, NAN, dict(status="skipped", error=why), None, None, "")
                             for nm in wanted if nm.removesuffix("+vote") == base]
@@ -308,6 +310,29 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
             out += with_votes([rec[:10]], nm, w)
         return out
 
+    def run_method(base: str, wanted: set[str]):
+        """Every method gets the same progress lines: started (if it can run), a heartbeat, finished."""
+        m = REGISTRY[base]
+        try:
+            m.check()
+            runnable = True
+        except MethodUnavailable:
+            runnable = False                      # reported as 'skipped' by _run_method
+        t0, stop = time.perf_counter(), threading.Event()
+        if runnable:
+            log.info("[%s] %-24s started (%s)", ds.name, base, m.impl)
+
+            def heartbeat():
+                while not stop.wait(300):
+                    log.info("[%s] %-24s still running (%.0f min)", ds.name, base, (time.perf_counter() - t0) / 60)
+            threading.Thread(target=heartbeat, daemon=True).start()
+        try:
+            return _run_method(base, wanted)
+        finally:
+            stop.set()
+            if runnable:
+                log.info("[%s] %-24s finished in %.0fs", ds.name, base, time.perf_counter() - t0)
+
     def native_runs(base, m):
         recs = []
         task_kw = dict(markers=ds.markers, xy=ds.xy, groups=ds.groups, marker_matrix=matrix, device=device, seed=cfg.seed,
@@ -340,6 +365,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
 
     wanted_all = list(dict.fromkeys(cfg.methods))
     bases = list(dict.fromkeys(w.removesuffix("+vote") for w in wanted_all))
+    log.info("[%s] %d methods queued, %d at a time: %s", ds.name, len(bases), max(cfg.jobs, 1), ", ".join(bases))
     with ThreadPoolExecutor(max(cfg.jobs, 1)) as ex:
         outs = [o for part in ex.map(lambda b: run_method(b, {w for w in wanted_all if w.removesuffix("+vote") == b}), bases) for o in part]
     frames = {"results": pd.DataFrame([o[0] for o in outs])}
