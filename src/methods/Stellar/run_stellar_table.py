@@ -50,7 +50,7 @@ def build_graphs(q: pd.DataFrame, a) -> tuple[list[np.ndarray], list[np.ndarray]
     r = a.distance_threshold
     if r <= 0:      # auto: 3x the median nearest-neighbour distance (about 14 um on CODEX at 0.377 um/px, the original 14.28)
         nn_d = np.concatenate([t.query(pos[ix], k=2)[0][:, 1] for t, ix in zip(trees, groups) if len(ix) > 1])
-        r = 3.0 * float(np.median(nn_d))
+        r = a.distance_multiplier * float(np.median(nn_d))
     edges = []
     for t in trees:
         p = t.query_pairs(r, output_type="ndarray")
@@ -121,6 +121,7 @@ def main():
     p.add_argument("--y_col", default="y")
     p.add_argument("--hid_dim", type=int, default=160)
     p.add_argument("--distance_threshold", type=float, default=0.0, help="graph radius in x/y units; 0 = auto from the data")
+    p.add_argument("--distance_multiplier", type=float, default=3.0, help="auto graph radius = this x the median nearest-neighbour distance")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--lr", type=float, default=0.001)
     p.add_argument("--weight_decay", type=float, default=0.0001)

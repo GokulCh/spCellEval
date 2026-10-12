@@ -25,6 +25,9 @@ def get_args():
     parser.add_argument('--min_epochs', type=int, default=1)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--patience', type=int, default=10, help='Early-stopping patience')
+    parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--dropout', type=float, default=0.10)
+    parser.add_argument('--standard_split', action='store_true', help='train on fold_N_train and predict fold_N_test. Default (as in the original script): train on fold_N_test and predict fold_N_train, i.e. the 20:80 protocol')
     args = parser.parse_args()
 
     return args
@@ -62,6 +65,8 @@ def main(args):
         test_file = f"fold_{fold_number}_train.csv"
         val_file = f"fold_{fold_number}_validation.csv"
         train_file = f"fold_{fold_number}_test.csv"
+        if args.standard_split:
+            test_file, train_file = train_file, test_file
 
         # Read the train and test data files
         train_data_path = os.path.join(args.input_path, train_file)
@@ -92,7 +97,8 @@ def main(args):
         print("Num of features: ", num_features)
         print("Num of classes: ", num_classes)   
     
-        model = Trainer(results_dir = args.results_dir, num_features= num_features, num_classes=num_classes, batch_size=batch_size, max_epochs=max_epochs, min_epochs=min_epochs, patience=patience, verbose=verbose)
+        model = Trainer(results_dir = args.results_dir, num_features= num_features, num_classes=num_classes, batch_size=batch_size, max_epochs=max_epochs, min_epochs=min_epochs, patience=patience, verbose=verbose,
+                        learning_rate=args.learning_rate, dropout=args.dropout)
         # the MAPS Trainer takes CSV paths (fit/predict), not DataFrames: write the cleaned tables out first
         paths = {k: os.path.join(args.results_dir, f'_maps_{k}_fold{fold_number}.csv') for k in ('train', 'val', 'test')}
         for k, d in (('train', train_data), ('val', val_data), ('test', test_data)):

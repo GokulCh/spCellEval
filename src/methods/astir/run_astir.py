@@ -21,7 +21,9 @@ def run_astir(
     batch_size,
     random_seed,
     n_runs,
-    output_path
+    output_path,
+    threshold=0.7,
+    assignment_type="threshold",
 ):
     df = pd.read_csv(quant_path)
     marker_cols = df.loc[:, :separate_col].columns
@@ -44,7 +46,7 @@ def run_astir(
         elapsed_time = end_time - start_time
 
         inference_times.append(elapsed_time)
-        cts = ast.get_celltypes()
+        cts = ast.get_celltypes(threshold=threshold, assignment_type=assignment_type)   # below threshold -> "Unknown"
 
         df_cts = df.copy()
         df_cts['predicted_phenotype'] = cts
@@ -71,6 +73,8 @@ def main():
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility (default: 42).')
     parser.add_argument('--n_runs', type=int, default=5, help='Number of runs for the ASTIR algorithm (default: 5).')
     parser.add_argument('--output_path', type=str, required=True, help='Path to save the ASTIR results.')
+    parser.add_argument("--threshold", type=float, default=0.7, help="min probability to assign a cell type, else Unknown (astir default 0.7)")
+    parser.add_argument("--assignment_type", choices=["threshold", "max"], default="threshold", help="max always takes the most probable type (no Unknown)")
     args = parser.parse_args()
 
     torch.device(args.device)  
@@ -88,7 +92,9 @@ def main():
         batch_size=args.batch_size,
         random_seed=args.random_seed,
         n_runs=args.n_runs,
-        output_path=args.output_path
+        output_path=args.output_path,
+        threshold=args.threshold,
+        assignment_type=args.assignment_type,
     )
 
 if __name__ == "__main__":

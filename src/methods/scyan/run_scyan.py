@@ -231,7 +231,10 @@ def main():
     parser.add_argument("--n_hidden_layers", type=int, default=None)
     parser.add_argument("--n_layers", type=int, default=None)
     parser.add_argument("--max_epochs", type=int, default=None, help="max training epochs of fit() (library default if unset)")
-    parser.add_argument("--min_delta", type=float, default=None, help="early-stopping min_delta of fit()")
+    parser.add_argument("--min_delta", type=float, default=None, help="early-stopping min_delta of fit() (Scyan default 1)")
+    parser.add_argument("--batch_size", type=int, default=None, help="Scyan batch size (default 8192)")
+    parser.add_argument("--max_samples", type=int, default=None, help="cells drawn per epoch at most (Scyan default 200000)")
+    parser.add_argument("--modulo_temp", type=int, default=None, help="temperature is applied in 2 of every modulo_temp epochs (default 3)")
     args = parser.parse_args()
     pick = lambda *ks: {k: getattr(args, k) for k in ks if getattr(args, k) is not None}
 
@@ -254,7 +257,7 @@ def main():
         temperature=args.temperature,
         remove_result_cell_types=args.remove_result_cell_types,
         output_path=args.output_path,
-        model_kwargs=pick("lr", "hidden_size", "n_hidden_layers", "n_layers"),
+        model_kwargs=pick("lr", "hidden_size", "n_hidden_layers", "n_layers", "batch_size", "max_samples", "modulo_temp"),
         fit_kwargs=pick("max_epochs", "min_delta"),
     )
 

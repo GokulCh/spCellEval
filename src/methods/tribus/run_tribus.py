@@ -9,7 +9,7 @@ import time
 
 
 def run_tribus(dataset_path, seed, n_runs, seed_stability_mode, granularity_level, columns_to_use, remove_cell_types,scaling,log1p, decision_matrix_path, normalization, tuning, sigma, learning_rate,
-               clustering_threshold, undefined_threshold, other_threshold, depth, remove_result_cell_types, output_path):
+               clustering_threshold, undefined_threshold, other_threshold, depth, remove_result_cell_types, output_path, outlier_quantile=0.999):
     
     sample_data = pd.read_csv(dataset_path)
 
@@ -28,8 +28,9 @@ def run_tribus(dataset_path, seed, n_runs, seed_stability_mode, granularity_leve
     else:
         columns_to_use = colums_to_use_clean
     cols = list(columns_to_use)
-    Q = sample_data[cols].quantile(0.999)
-    sample_data = sample_data[~((sample_data[cols] > Q)).any(axis=1)]
+    if outlier_quantile < 1:          # cells above this quantile of any marker are dropped before tribus (1 keeps all cells)
+        Q = sample_data[cols].quantile(outlier_quantile)
+        sample_data = sample_data[~((sample_data[cols] > Q)).any(axis=1)]
     if scaling is not None:
         sample_data[cols] = sample_data[cols] * scaling
     if log1p:
@@ -52,7 +53,7 @@ def run_tribus(dataset_path, seed, n_runs, seed_stability_mode, granularity_leve
             current_seed = seed + i
         else:
             current_seed = seed
-        labels,_ = tribus.run_tribus(sample_data[cols], logic, depth=depth, normalization=normalization, tuning=tuning, sigma=sigma, learning_rate=learning_rate,
+        labels,_ = tribus.run_tribus(sample_data[cols], logic, depth=depth, normalization=normalization, tuning=None if tuning is None else int(tuning), sigma=sigma, learning_rate=learning_rate,
                                     clustering_threshold=clustering_threshold, undefined_threshold=undefined_threshold, other_threshold=other_threshold, random_state=current_seed)
         end_time_loop = time.perf_counter()
         elapsed_time_loop = end_time_loop - start_time_loop
@@ -90,6 +91,7 @@ def main():
     parser.add_argument("--depth", type=int, default=3, help="Depth of the decision matrix")
     parser.add_argument("--remove_result_cell_types", type=str, default=None, help="Cell types to remove from the result, Comma separated")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the results")
+    parser.add_argument("--outlier_quantile", type=float, default=0.999, help="drop cells above this quantile of any marker (default 0.999; 1 keeps all cells)")
     args = parser.parse_args()
 
     run_tribus(
@@ -112,7 +114,8 @@ def main():
         other_threshold=args.other_threshold,
         depth=args.depth,
         remove_result_cell_types=args.remove_result_cell_types,
-        output_path=args.output_path
+        output_path=args.output_path,
+        outlier_quantile=args.outlier_quantile,
     )
 
 if __name__ == "__main__":

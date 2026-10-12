@@ -126,13 +126,13 @@ def _cli(p: dict, flags: dict[str, str]) -> list[str]:
 
 def _leiden(c: ScriptCtx) -> list[str]:
     return ["-i", str(c.ws.quant), "-o", str(c.out), "-m", *c.ws.markers, "-it", str(c.n_runs), "-l", "short",
-            *_cli(c.params, {"resolutions": "-r", "n_neighbors": "--n_neighbors", "pca": "-p", "n_pcs": "--n_pcs"})]
+            *_cli(c.params, {"resolutions": "-r", "n_neighbors": "--n_neighbors", "pca": "-p", "n_pcs": "--n_pcs", "normalization": "-n"})]
 
 
 def _flowsom(c: ScriptCtx) -> list[str]:
     k = c.params.get("n_clusters") or c.n_clusters
     return ["-i", str(c.ws.quant), "-m", *c.ws.markers, "-o", str(c.out), "-flow", str(k), "-it", str(c.n_runs),
-            *_cli(c.params, {"xdim": "--xdim", "ydim": "--ydim", "rlen": "--rlen"})]
+            *_cli(c.params, {"xdim": "--xdim", "ydim": "--ydim", "rlen": "--rlen", "mst": "--mst", "distf": "--distf"})]
 
 
 def _tacit(c: ScriptCtx) -> list[str]:
@@ -158,7 +158,7 @@ def _scyan(c: ScriptCtx) -> list[str]:
             str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu",
             *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p", "lr", "hidden_size", "n_hidden_layers",
-                                                   "n_layers", "max_epochs", "min_delta")})]
+                                                   "n_layers", "max_epochs", "min_delta", "batch_size", "max_samples", "modulo_temp")})]
 
 
 def _astir(c: ScriptCtx) -> list[str]:
@@ -166,7 +166,7 @@ def _astir(c: ScriptCtx) -> list[str]:
             c.ws.last_marker, "--output_path", str(c.out), "--n_runs", str(c.n_runs), "--random_seed", str(c.seed),
             "--device", "cuda" if c.device == "cuda" else "cpu",
             *_cli(c.params, {k: "--" + k for k in ("max_epochs", "n_init", "n_init_epochs", "delta_loss", "learning_rate",
-                                                   "batch_size", "scaling", "log1p")})]
+                                                   "batch_size", "scaling", "log1p", "threshold", "assignment_type")})]
 
 
 def _tribus(c: ScriptCtx) -> list[str]:
@@ -174,7 +174,7 @@ def _tribus(c: ScriptCtx) -> list[str]:
             str(_tribus_xlsx(c)), "--granularity_level", c.ws.level, "--output_path", str(c.out), "--n_runs",
             str(c.n_runs), "--seed", str(c.seed),
             *_cli(c.params, {k: "--" + k for k in ("sigma", "learning_rate", "clustering_threshold", "undefined_threshold",
-                                                   "other_threshold", "depth", "scaling", "log1p", "normalization", "tuning")})]
+                                                   "other_threshold", "depth", "scaling", "log1p", "normalization", "tuning", "outlier_quantile")})]
 
 
 def _starling(c: ScriptCtx) -> list[str]:
@@ -182,7 +182,7 @@ def _starling(c: ScriptCtx) -> list[str]:
     return ["--dataset_path", str(c.ws.quant), "--split_col_name", c.ws.split_col, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed),
             *_cli(p, {k: "--" + k for k in ("k_cluster", "initial_clustering", "dist_option", "singlet_prop", "model_cell_size",
-                                            "model_regularizer", "lr", "transform", "scaling", "max_epochs", "batch_size", "patience", "min_delta")})]
+                                            "model_regularizer", "lr", "transform", "scaling", "max_epochs", "patience", "min_delta", "model_zplane_overlap")})]
 
 
 def _maps(c: ScriptCtx) -> list[str]:
@@ -193,7 +193,7 @@ def _maps(c: ScriptCtx) -> list[str]:
     for f in src.glob("fold_*_*.csv"):
         pd.read_csv(f, usecols=[*c.ws.markers, "encoded_phenotype"]).to_csv(dst / f.name, index=False)
     return [str(dst), str(c.out), str(c.ws.labels),
-            *_cli(c.params, {k: "--" + k for k in ("max_epochs", "min_epochs", "batch_size", "patience")})]
+            *_cli(c.params, {k: "--" + k for k in ("max_epochs", "min_epochs", "batch_size", "patience", "learning_rate", "dropout", "standard_split")})]
 
 
 def _stellar(c: ScriptCtx) -> list[str]:
@@ -201,7 +201,8 @@ def _stellar(c: ScriptCtx) -> list[str]:
     return ["--quant", str(c.ws.quant), "--folds_dir", str(c.ws.kdir), "--output_dir", str(c.out),
             "--label_col", LEVEL_COLUMN[c.ws.level], "--device", "cuda" if c.device == "cuda" else "cpu", "--seed", str(c.seed),
             *_cli(c.params, {"hid_dim": "--hid_dim", "distance_threshold": "--distance_threshold", "epochs": "--epochs", "lr": "--lr",
-                             "weight_decay": "--weight_decay", "image_batch_size": "--image_batch_size"}),
+                             "weight_decay": "--weight_decay", "image_batch_size": "--image_batch_size",
+                             "distance_multiplier": "--distance_multiplier"}),
             "--markers", *c.ws.markers]
 
 

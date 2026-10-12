@@ -31,6 +31,8 @@ parser$add_argument("-it", "--iterations", dest = "iterations", type = "integer"
                     help = "Number of iterations (default: 5)")
 parser$add_argument("-n", "--normalization", dest = "normalization", default = FALSE,
                     help = "Row normalization before clustering (default: FALSE)")
+parser$add_argument("--mst", type = "integer", default = 1, help = "MST rounds (default: 1)")
+parser$add_argument("--distf", type = "integer", default = 2, help = "distance: 1 manhattan, 2 euclidean, 3 chebyshev, 4 cosine (default: 2)")
 parser$add_argument("--rlen", type = "integer", default = 10, help = "SOM training rounds (default: 10)")
 parser$add_argument("--xdim", type = "integer", default = 10, help = "SOM grid width (default: 10)")
 parser$add_argument("--ydim", type = "integer", default = 10, help = "SOM grid height (default: 10)")
@@ -60,7 +62,7 @@ if (args$normalization == TRUE)
 for (iteration in 1:args$iterations) {
   start_time <- Sys.time()
   flowsom_df <- FlowSOM(as.matrix(marker_df), silent = FALSE, nClus = args$flow_nclus,
-                        xdim = args$xdim, ydim = args$ydim, rlen = args$rlen)
+                        xdim = args$xdim, ydim = args$ydim, rlen = args$rlen, mst = args$mst, distf = args$distf)
   end_time <- Sys.time()
   elapsed <- round(as.numeric(difftime(end_time, start_time, units = "sec")), 2)
 

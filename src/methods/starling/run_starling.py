@@ -33,6 +33,7 @@ def run_starling(
     n_runs: int,
     output_path: str,
     train_kwargs: dict = None,
+    model_zplane_overlap: str = None,
     patience: int = None,
     min_delta: float = None,
 ):
@@ -65,6 +66,7 @@ def run_starling(
             cell_size_col_name=cell_size_col_name,
             model_regularizer=model_regularizer,
             learning_rate=lr,
+            **({} if model_zplane_overlap is None else {"model_zplane_overlap": model_zplane_overlap == "Y"}),
         )
         log_tb = pl.loggers.TensorBoardLogger(save_dir="log")
         es_kw = {k: v for k, v in (("patience", patience), ("min_delta", min_delta)) if v is not None}
@@ -204,7 +206,7 @@ def main():
     )
 
     parser.add_argument("--max_epochs", type=int, default=None, help="max training epochs (starling default if unset)")
-    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--model_zplane_overlap", choices=["Y", "N"], default=None, help="model z-plane overlap (starling default Y)")
     parser.add_argument("--patience", type=int, default=None, help="early-stopping patience on train_loss (Lightning default 3)")
     parser.add_argument("--min_delta", type=float, default=None)
     args = parser.parse_args()
@@ -224,7 +226,8 @@ def main():
         lr=args.lr,
         n_runs=args.n_runs,
         output_path=args.output_path,
-        train_kwargs={k: getattr(args, k) for k in ("max_epochs", "batch_size") if getattr(args, k) is not None},
+        train_kwargs={k: getattr(args, k) for k in ("max_epochs",) if getattr(args, k) is not None},
+        model_zplane_overlap=args.model_zplane_overlap,
         patience=args.patience,
         min_delta=args.min_delta,
     )
