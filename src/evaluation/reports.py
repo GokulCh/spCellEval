@@ -40,6 +40,7 @@ def write_reports(out: str | Path) -> dict[str, pd.DataFrame]:
         md += ["\n## Detailed results\n", to_md(l3[[c for c in cols if c in l3]].sort_values(["dataset", "overall_performance"], ascending=[True, False]))]
         piv2 = l3.pivot_table(index=["category", "method"], columns="dataset", values="f1_macro_mean").reset_index()
         piv2.to_csv(s / "comparison_f1_macro.csv", index=False)
+        (s / "comparison_f1_macro.md").write_text("# Macro-F1: methods x datasets\n\n" + to_md(piv2), encoding="utf-8")   # paste into the README
     if len(tabs.get("unsupervised_qc", [])):
         md += ["\n## Unsupervised QC\n", to_md(tabs["unsupervised_qc"])]
     if len(tabs["failures"]):

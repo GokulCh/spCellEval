@@ -73,7 +73,9 @@ python cli.py tune --data IMMUcan_quantification.csv --methods xgboost,leiden,ta
 python cli.py benchmark --data IMMUcan_quantification.csv     # uses the saved values (--params FILE to use another file)
 ```
 
-`tune` scores each candidate (grid in `src/models/params.py`) on a hold-out split with a different seed than the benchmark's (`--tune-seed`) and keeps the best `--metric` (default `f1_macro`); every trial is logged to `<out>/tuning_log.csv`. Tuned scores are optimistic, so report the numbers from a fresh `benchmark` run. `extra_args` passes raw CLI tokens to script-based methods for options not listed.
+`tune` scores each candidate (grid in `src/models/params.py`) on the **validation** split of private folds (never the test split; `--tune-seed` makes them differ from the benchmark's), keeps the best `--metric` (default `f1_macro`) and writes it to the params file. Outputs: `tuning_log.csv` (every trial), `tuning_summary.csv` + `tuning_gain.png` (current vs tuned score). Speed-ups: `--jobs N` runs N trials at once, `--stage1-cells 20000` first scores all candidates on a 20k-cell subsample and re-scores only the best `--finalists` on the full data; the table is loaded once. `extra_args` passes raw CLI tokens to script-based methods for options not listed. `python cli.py params --schema` writes a JSON schema for editor checking of the params file.
+
+Seed variability: `benchmark --repeats 5` repeats the whole run with 5 consecutive seeds and writes `summary/seed_variability.csv` (mean/std macro-F1); `summary/comparison_f1_macro.md` is a ready-to-paste methods x datasets table.
 
 ### Evaluation Scripts
 The notebooks in  `src/metrics_scripts` perform the evaluation over all methods. The code blocks withiin `eval_mapping.ipynb` goes through all the methods within a specified dataset and outputs a `final_results.csv` file that contains all of the metrics for different levels. 

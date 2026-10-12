@@ -24,6 +24,7 @@ import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,7 @@ from ..models.spatial import spatial_vote
 from ..preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
 from ..preprocessing.data import LEVEL_COLUMN
 from ..preprocessing.splits import DEFAULT_FRACTIONS
-from ..preprocessing.workspace import resolve_store
+from ..preprocessing.workspace import resolve_store, validation_as_test
 from .analysis import dataset_report, level_labels
 from .metrics import per_class_table, supervised_metrics, unsupervised_qc
 from .repo_assets import to_level
@@ -82,6 +83,8 @@ class BenchConfig:
     params_file: str | None = None         # method parameters per dataset (default configs/method_params.json, see models/params.py)
     overrides: dict = field(default_factory=dict)   # {method: {param: value}} on top of the params file (used by the tuner)
     report: bool = True                    # write the dataset report (the tuner turns it off)
+    tune_on_validation: bool = False       # tuner: the validation split replaces the test split in this run's private folds
+    cache_data: bool = False               # tuner: load + transform each table once and reuse it across trials
     auto_matrix: bool = True               # build a draft decision matrix from the labels when a marker method has none
     max_cells: int = 0
     timeout: float = 0.0
@@ -121,9 +124,15 @@ def out_dir_for(cfg: BenchConfig, name: str) -> Path:
     return (Path(cfg.out) / name).resolve()
 
 
+@lru_cache(maxsize=4)
+def _prepared(path, modality, level, max_cells, seed, transform_, cofactor, normalize, batch_correct):
+    ds = load_dataset(path, modality=modality, level=level)
+    return transform(ds.subsample(max_cells, seed), transform_, cofactor, normalize, batch_correct)
+
+
 def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
-    ds = load_dataset(path, modality=cfg.modality, level=cfg.level)
-    ds = transform(ds.subsample(cfg.max_cells, cfg.seed), cfg.transform, cfg.cofactor, cfg.normalize, cfg.batch_correct)
+    prep = _prepared if cfg.cache_data else _prepared.__wrapped__          # ponytail: cached datasets are shared, methods must not mutate them
+    ds = prep(str(path), cfg.modality, cfg.level, cfg.max_cells, cfg.seed, cfg.transform, cfg.cofactor, cfg.normalize, cfg.batch_correct)
     X, n = ds.X.to_numpy(np.float32), len(ds)
     sup = cfg.mode == "supervised"
     if sup and ds.y is None:
@@ -178,6 +187,11 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     if not sup and (conf == 1).sum() >= cfg.folds * 10 and len(np.unique(lab[conf == 1])) >= 2:
         ws_tr = build_workspace(ds, lab, out_dir / "workspace_pseudo", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
                                 rows=np.where(conf == 1)[0], extra=extra)       # semi-supervised: confident cells only
+    if cfg.tune_on_validation:                    # tuning: every method is scored on the validation split, never on the test split
+        if store is not None:
+            raise ValueError("tune_on_validation rewrites the fold files, so it needs splits_dir='out' (private folds)")
+        for w in {id(w): w for w in (ws_all, ws_tr) if w is not None}.values():
+            validation_as_test(w)
     folds = ws_tr.folds() if ws_tr else []
     jobs: list[dict] = []
     if folds:

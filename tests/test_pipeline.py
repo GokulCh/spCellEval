@@ -637,3 +637,24 @@ def test_native_method_reads_params_and_tune_writes_the_best(data, tmp_path):
     assert set(best) == {"resolution", "k_neighbors"}
     top = log.loc[log.f1_macro.idxmax()]                                                  # the saved set is the best-scoring trial
     assert json.loads(top.params) == best
+
+
+def test_tuning_uses_validation_never_test_and_writes_summary(data, tmp_path):
+    from src.evaluation import BenchConfig
+    from src.evaluation.runner import run_dataset
+    from src.models import params as mp
+    p, _ = data
+    cfg = BenchConfig(data=[str(p)], out=str(tmp_path / "o"), methods=["svm"], split="holdout", splits_dir="out",
+                      tune_on_validation=True, report=False, params_file=str(tmp_path / "p.json"))
+    run_dataset(str(p), cfg)
+    kd = next((tmp_path / "o").rglob("fold_1_validation.csv")).parent
+    v, t = pd.read_csv(kd / "fold_1_validation.csv"), pd.read_csv(kd / "fold_1_test.csv")
+    assert v.spc_row.tolist() == t.spc_row.tolist()                                       # the test file now holds the validation rows
+    sc = mp.schema()
+    assert sc["properties"]["default"]["properties"]["tacit"]["properties"]["r"]["type"] == ["integer"]
+    out = tmp_path / "t"
+    assert cli.main(["tune", "--data", str(p), "--out", str(out), "--methods", "louvain", "--trials", "4", "--jobs", "2",
+                     "--stage1-cells", "400", "--finalists", "2", "--params", str(tmp_path / "q.json"), "--max-cells", "1200"]) == 0
+    s = pd.read_csv(out / "tuning_summary.csv")
+    assert list(s.method) == ["louvain"] and s.tuned.iloc[0] >= s.current.iloc[0]         # the current setting always competes
+    assert set(pd.read_csv(out / "tuning_log.csv").stage) == {"s", "f"}

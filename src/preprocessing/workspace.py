@@ -270,6 +270,13 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
     return ws
 
 
+def validation_as_test(ws: Workspace) -> None:
+    """Tuning: overwrite each fold's test file with its validation file (train and validation are disjoint, so a method
+    tuned on this never sees the real test split). Only for a private workspace, never for folds shared through a store."""
+    for v in ws.kdir.glob("fold_*_validation.csv"):
+        shutil.copy(v, v.with_name(v.name.replace("validation", "test")))
+
+
 def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray | None = None,
                  variants_root: str | Path | None = None) -> Path:
     """A single-fold copy of the dataset dir (for hold-out / progressive runs of the repo's classic-ML script).

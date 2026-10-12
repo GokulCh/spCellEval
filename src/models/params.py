@@ -111,3 +111,18 @@ def trials(method: str, n: int, seed: int = 0, start: dict | None = None) -> lis
 def of(method: str, given: dict) -> dict:
     """``Task.params`` with the method's defaults filled in (what the native methods read)."""
     return {**defaults(method), **given}
+
+
+_JSON = {bool: "boolean", int: "integer", float: "number", str: "string", list: "array", type(None): "null"}
+
+
+def schema() -> dict:
+    """JSON Schema of the params file (editors then autocomplete and flag unknown / mistyped parameters)."""
+    def types(vals):
+        ts = {_JSON[type(v)] for v in vals}
+        return sorted(ts - {"integer"} if "number" in ts else ts)
+    sec = {"type": "object", "additionalProperties": False, "properties": {
+        m: {"type": "object", "additionalProperties": False,
+            "properties": {k: {"type": types([d, *c])} for k, (d, c) in sp.items()}} for m, sp in SPACE.items()}}
+    return {"$schema": "http://json-schema.org/draft-07/schema#", "title": "spCellEval method parameters",
+            "type": "object", "properties": {"$schema": {"type": "string"}, "_comment": {"type": "string"}, "default": sec}, "additionalProperties": sec}

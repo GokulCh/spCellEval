@@ -46,3 +46,27 @@ CRAN: `tidyverse`, `data.table`, `argparse`, `logging`, `future`, `future.apply`
 Bioconductor: `SingleCellExperiment`, `FlowSOM`, `FuseSOM`
 
 GitHub: `Rphenograph`, `TACIT`
+
+
+## What each method needs
+
+| Method | Python packages | Other |
+|---|---|---|
+| logistic_regression, random_forest, svm, most_frequent, stratified, singler, spade, spatial_gnn, knn_smooth, marker_score | scikit-learn | |
+| xgboost | xgboost, scikit-learn | |
+| louvain | networkx | |
+| leiden | scanpy, leidenalg, anndata | |
+| flowsom | | Rscript, R package `FlowSOM` |
+| tacit | | Rscript, R package `TACIT` (the one installed from GitHub) |
+| scyan | scyan, anndata | |
+| astir | astir, torch | |
+| tribus | tribus | |
+| starling | starling, anndata, torch | |
+| maps | maps | |
+| stellar | torch, torch_geometric | |
+| scanvi, scarches | scvi-tools | |
+| cellsighter, nimbus, deepcelltypes | | image-based: need images + masks, not run from a quantification table |
+
+A method whose package lives in its own conda environment is pointed at it in `configs/script_methods.json`
+(`"scyan": {"python": "/path/to/env/bin/python"}`, `"tacit": {"Rscript": "..."}`). `python cli.py methods` shows what is
+available in the current environment.

@@ -214,3 +214,7 @@ __marimo__/
 # local data and results
 data/
 logs/
+# training logs / checkpoints written by methods
+src/methods/starling/log/
+*.ckpt
+lightning_logs/

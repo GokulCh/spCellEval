@@ -87,6 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "Use about cpus / --jobs so the two together fit your allocation")
         sp.add_argument("--device", choices=["cpu", "gpu", "auto"], default="auto")
         sp.add_argument("--seed", type=int, default=0)
+        sp.add_argument("--repeats", type=int, default=1,
+                        help="run the whole benchmark with this many consecutive seeds (new folds each) and write mean / std of "
+                             "macro-F1 to summary/seed_variability.csv")
         sp.add_argument("--k-neighbors", type=int, default=10)
         sp.add_argument("--no-plots", action="store_true")
 
@@ -125,11 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--trials", type=int, default=12, help="parameter sets tried per dataset x method (the current setting is always one)")
     sp.add_argument("--metric", default="f1_macro", help="results column to maximise (e.g. f1_macro, mcc, accuracy)")
     sp.add_argument("--tune-seed", type=int, default=1000, help="added to --seed for the tuning splits, so they differ from the benchmark's")
+    sp.add_argument("--stage1-cells", type=int, default=0,
+                    help="two-stage search: score every candidate on this many cells first, then re-score only the best "
+                         "--finalists (and the current setting) on all the data (0 = single stage)")
+    sp.add_argument("--finalists", type=int, default=3)
+    sp.epilog = "Trials are scored on the validation split of private folds, never the test split. --jobs runs that many trials in parallel."
 
     sp = add("params", help="show every method's parameters, defaults and search candidates; --init writes them for a dataset")
     sp.add_argument("--methods", default="all")
     sp.add_argument("--dataset", help="dataset name (data file name without _quantification): show / --init its settings")
     sp.add_argument("--params", help="params file (default configs/method_params.json)")
+    sp.add_argument("--schema", action="store_true", help="write configs/method_params.schema.json (add \"$schema\": \"./method_params.schema.json\" to the params file for editor checks)")
     sp.add_argument("--init", action="store_true", help="write the defaults of the chosen methods under --dataset (existing values are kept)")
 
     sp = add("preprocess", help="load, transform, write the repo-layout table and create folds with the repo's run_kfold_creator")
@@ -347,6 +356,11 @@ def run_report(res, out: Path) -> str:
 
 def cmd_params(a) -> None:
     from src.models import params as mp
+    if a.schema:
+        p = mp.CONFIG.with_name("method_params.schema.json")
+        p.write_text(json.dumps(mp.schema(), indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {p}")
+        return
     names = resolve_methods(a.methods)
     for n in names:
         space = mp.SPACE.get(n, {})
@@ -368,12 +382,13 @@ def cmd_tune(a) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True,
                         handlers=[logging.StreamHandler(), logging.FileHandler(out / "tune.log", encoding="utf-8")])
     cfg = bench_config(a)
-    log = tune(cfg, cfg.methods, a.trials, a.metric, a.tune_seed)
-    print(f"\n{len(log)} trials; log: {out / 'tuning_log.csv'}\nbest values saved to {a.params or 'configs/method_params.json'}")
-    print("note: tuned on hold-out splits that overlap the benchmark's cells, so tuned scores are optimistic - re-run `benchmark` to report.")
+    log = tune(cfg, cfg.methods, a.trials, a.metric, a.tune_seed, a.jobs, a.stage1_cells, a.finalists)
+    print(f"\n{len(log)} trials; log: {out / 'tuning_log.csv'}, current vs tuned: {out / 'tuning_summary.csv'} (+ tuning_gain.png)")
+    print(f"best values saved to {a.params or 'configs/method_params.json'}; tuned on validation splits only - run `benchmark` for the reported scores.")
 
 
 def cmd_run(a) -> None:
+    import pandas as pd
     from src.evaluation import run_benchmark, write_reports
     from src.evaluation.plots import make_all
     out = Path(a.out)
@@ -385,6 +400,15 @@ def cmd_run(a) -> None:
     if res.empty:
         raise RuntimeError("no results produced - see benchmark.log")
     write_reports(a.out)
+    if getattr(a, "repeats", 1) > 1:                       # extra seeds go to <out>/seeds/seed<k>; the first run stays the main result
+        import dataclasses
+        more = [run_benchmark(dataclasses.replace(cfg, seed=cfg.seed + k, out=str(out / "seeds" / f"seed{cfg.seed + k}"))).assign(seed=cfg.seed + k)
+                for k in range(1, a.repeats)]
+        ok = pd.concat([res.assign(seed=cfg.seed), *more])
+        ok = ok[ok.status == "ok"].groupby(["dataset", "method", "split", "seed"]).f1_macro.mean().reset_index()
+        var = ok.groupby(["dataset", "method", "split"]).f1_macro.agg(["mean", "std", "count"]).reset_index()
+        var.to_csv(out / "summary" / "seed_variability.csv", index=False)
+        print(f"\nmacro-F1 over {a.repeats} seeds (mean, std): {out / 'summary' / 'seed_variability.csv'}")
     print(f"\nstatus counts: {res.status.value_counts().to_dict()}")
     print("\n" + run_report(res, out))
     print(f"tables: {out / 'summary'}")
