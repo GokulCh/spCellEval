@@ -17,6 +17,7 @@ Raw outputs (analysis re-runs from these alone):
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import threading
 import time
@@ -40,7 +41,7 @@ from ..preprocessing.data import LEVEL_COLUMN
 from ..preprocessing.splits import DEFAULT_FRACTIONS
 from ..preprocessing.workspace import resolve_store, validation_as_test
 from .analysis import dataset_report, level_labels
-from .metrics import per_class_table, supervised_metrics, unsupervised_qc
+from .metrics import per_class_table, spatial_metrics, supervised_metrics, unsupervised_qc
 from .repo_assets import to_level
 
 log = logging.getLogger("spcelleval")
@@ -83,7 +84,10 @@ class BenchConfig:
     params_file: str | None = None         # method parameters per dataset (default configs/method_params.json, see models/params.py)
     overrides: dict = field(default_factory=dict)   # {method: {param: value}} on top of the params file (used by the tuner)
     report: bool = True                    # write the dataset report (the tuner turns it off)
-    tune_on_validation: bool = False       # tuner: the validation split replaces the test split in this run's private folds
+    val_pct: float = 0.15                  # share of each training fold held out as the validation split
+    pseudo_min_score: float = 0.5          # unsupervised mode: a marker pseudo-label is 'confident' above this score ...
+    pseudo_min_margin: float = 0.25        # ... and this margin over the runner-up type
+    tune_on_validation: bool = False      # tuner: the validation split replaces the test split in this run's private folds
     cache_data: bool = False               # tuner: load + transform each table once and reuse it across trials
     auto_matrix: bool = True               # build a draft decision matrix from the labels when a marker method has none
     max_cells: int = 0
@@ -164,7 +168,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     pseudo = ok = None
     if matrix is not None:
         try:
-            pseudo, ok = pseudo_labels(X, ds.markers, matrix)
+            pseudo, ok = pseudo_labels(X, ds.markers, matrix, cfg.pseudo_min_score, cfg.pseudo_min_margin)
         except Exception as e:                       # matrix does not match the markers
             log.warning("%s: marker matrix unusable (%s)", ds.name, e)
             matrix = None
@@ -173,6 +177,11 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
 
     out_dir = (Path(cfg.out) / ds.name).resolve()      # absolute: the repo scripts run from their own folders
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:                                              # the exact parameters every method ran with (for the text report / reproduction)
+        used = {m: P(m) for m in dict.fromkeys(w.removesuffix("+vote") for w in cfg.methods)}
+        (out_dir / "params_used.json").write_text(json.dumps(used, indent=2, default=str), encoding="utf-8")
+    except ValueError as e:
+        log.warning("%s: parameters not recorded: %s", ds.name, e)
     if os.name == "nt" and len(str(out_dir.resolve())) > 110:
         log.warning("output path is long (%d chars); the repo's classic-ML script writes files ~130 chars deeper and "
                     "Windows stops at 260 - use a shorter --out", len(str(out_dir.resolve())))
@@ -182,11 +191,11 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     extra = {"spc_confident": conf, **({} if ds.y is None or sup else {"gt_cell_type": ds.y})}
     store = resolve_store(cfg.splits_dir, path, ds.name, len(cfg.data) > 1) if sup else None
     ws_all = build_workspace(ds, lab, out_dir / "workspace", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
-                             make_folds=sup, extra=extra, store=store)
+                             val_pct=cfg.val_pct, make_folds=sup, extra=extra, store=store)
     ws_tr = ws_all if sup else None
     if not sup and (conf == 1).sum() >= cfg.folds * 10 and len(np.unique(lab[conf == 1])) >= 2:
         ws_tr = build_workspace(ds, lab, out_dir / "workspace_pseudo", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
-                                rows=np.where(conf == 1)[0], extra=extra)       # semi-supervised: confident cells only
+                                val_pct=cfg.val_pct, rows=np.where(conf == 1)[0], extra=extra)       # semi-supervised: confident cells only
     if cfg.tune_on_validation:                    # tuning: every method is scored on the validation split, never on the test split
         if store is not None:
             raise ValueError("tune_on_validation rewrites the fold files, so it needs splits_dir='out' (private folds)")
@@ -238,6 +247,8 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 lvl_rows.append(dict(**key, eval_level=lv, **mt))
                 if lv == cfg.level:
                     row.update(mt)
+                    if "x" in df and df["x"].notna().all():
+                        row.update(spatial_metrics(yt, yl, df[["x", "y"]].to_numpy(float), df["image"].to_numpy() if "image" in df else None, cfg.k_neighbors))
                     cls_rows = [dict(**key, **c) for c in per_class_table(yt, yl).to_dict("records")]
         if not sup and "spc_row" in df:
             r = df["spc_row"].to_numpy(int)

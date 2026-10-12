@@ -17,6 +17,7 @@ import pandas as pd
 
 from ..repo import METHODS
 from .base import MethodUnavailable, Result, Task, register
+from .params import of
 
 
 def _key(s: str) -> str:
@@ -88,7 +89,7 @@ def pseudo_labels(X, markers, matrix, min_score: float = 0.5, min_margin: float 
 
 @register("marker_score", 2, "prior", ())
 def marker_score(t: Task) -> Result:
-    """Plain marker-score annotation (argmax of signed marker z-scores; 'Unknown' if no type scores > 0).
+    """Plain marker-score annotation (argmax of signed marker z-scores; 'Unknown' if no type scores above min_score, default 0).
 
     Lightweight stand-in that needs no R/torch; it is NOT TACIT (run ``tacit`` for the real R implementation).
     """
@@ -97,7 +98,7 @@ def marker_score(t: Task) -> Result:
     types, M = align(t.marker_matrix, t.markers)
     S = marker_scores(t.X_test, M)
     lab = np.array(types, dtype=object)[S.argmax(1)]
-    return Result(np.where(S.max(1) > 0, lab, "Unknown").astype(str))
+    return Result(np.where(S.max(1) > of("marker_score", t.params)["min_score"], lab, "Unknown").astype(str))
 
 
 PRIOR_METHODS = {"tacit", "scyan", "astir", "marker_score"}      # the methods that need a marker decision matrix

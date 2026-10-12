@@ -4,8 +4,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import jensenshannon
-from sklearn.metrics import (adjusted_rand_score, cohen_kappa_score, confusion_matrix, davies_bouldin_score,
-                             f1_score, matthews_corrcoef, normalized_mutual_info_score, silhouette_score)
+from sklearn.metrics import (adjusted_rand_score, cohen_kappa_score, completeness_score, confusion_matrix, davies_bouldin_score,
+                             f1_score, fowlkes_mallows_score, homogeneity_score, matthews_corrcoef,
+                             normalized_mutual_info_score, precision_score, recall_score, silhouette_score, v_measure_score)
 from sklearn.neighbors import NearestNeighbors
 
 from ..models.base import MethodUnavailable
@@ -60,7 +61,43 @@ def supervised_metrics(y_true, y_pred, rare_frac: float = 0.01, level: str = "le
         specificity_macro=(tn / np.maximum(tn + fp, 1))[present].mean(),
         rare_accuracy=acc(rare), abundant_accuracy=acc(abund), n_rare_classes=int(rare.sum()),
         r2=r2, pearson=pear, jsd=jsd, jsd_scaled=1 - jsd,
+        # more of the usual classification metrics
+        balanced_accuracy=(tp / np.maximum(sup, 1))[present].mean(),
+        precision_macro=precision_score(y_true, y_pred, average="macro", zero_division=0),
+        recall_macro=recall_score(y_true, y_pred, average="macro", zero_division=0),
+        precision_weighted=precision_score(y_true, y_pred, average="weighted", zero_division=0),
+        recall_weighted=recall_score(y_true, y_pred, average="weighted", zero_division=0),
+        f1_rare_macro=_f1_over(tp, fp, fn, rare), f1_abundant_macro=_f1_over(tp, fp, fn, abund),
+        n_classes_missed=int((present & (pred == 0)).sum()),                   # present in the truth, never predicted
+        unassigned_fraction=float(np.isin(np.char.lower(y_pred), UNASSIGNED).mean()),
+        # cluster-vs-label agreement (also meaningful for the clustering methods)
+        homogeneity=homogeneity_score(y_true, y_pred), completeness=completeness_score(y_true, y_pred),
+        v_measure=v_measure_score(y_true, y_pred), fowlkes_mallows=fowlkes_mallows_score(y_true, y_pred),
     )
+
+
+UNASSIGNED = ["undefined", "unknown", "others", "other", "unassigned", "nan", "none", ""]
+
+
+def _f1_over(tp, fp, fn, mask) -> float:
+    """Macro F1 over the classes in ``mask`` (e.g. the rare ones)."""
+    return float((2 * tp / np.maximum(2 * tp + fp + fn, 1))[mask].mean()) if mask.any() else NAN
+
+
+def spatial_metrics(y_true, y_pred, xy, groups=None, k: int = 10, max_n: int = 100_000) -> dict:
+    """How well the predictions keep the tissue's spatial structure: the share of a cell's k spatial neighbours (same image)
+    that carry its own label, for the truth and for the prediction. ``gap`` = predicted - true (0 = same smoothness; > 0
+    means the prediction is spatially smoother than the truth, < 0 noisier)."""
+    out = dict(spatial_homophily_true=NAN, spatial_homophily_pred=NAN, spatial_homophily_gap=NAN)
+    if xy is None or len(xy) < k + 2 or len(xy) > max_n:
+        return out
+    from ..models.spatial import spatial_graph
+    A = spatial_graph(np.asarray(xy, float), None if groups is None else np.asarray(groups).astype(str), k).tocoo()
+    if A.nnz == 0:
+        return out
+    h = lambda y: float((np.asarray(y).astype(str)[A.row] == np.asarray(y).astype(str)[A.col]).mean())
+    t, p = h(y_true), h(y_pred)
+    return dict(spatial_homophily_true=t, spatial_homophily_pred=p, spatial_homophily_gap=p - t)
 
 
 def per_class_table(y_true, y_pred) -> pd.DataFrame:

@@ -47,4 +47,10 @@ def write_reports(out: str | Path) -> dict[str, pd.DataFrame]:
         md += ["\n## Runs that did not complete\n", to_md(tabs["failures"])]
     md.append("\nSee `analysis/insights.md` for automatic findings.\n")
     (s / "summary.md").write_text("\n".join(md), encoding="utf-8")
+    try:                                    # plain-text report of everything (rebuilt with the figure index after the figures)
+        from .text_report import write_text_report
+        write_text_report(out)
+    except Exception:
+        import logging
+        logging.getLogger("spcelleval").exception("text report failed")
     return tabs

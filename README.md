@@ -77,6 +77,20 @@ python cli.py benchmark --data IMMUcan_quantification.csv     # uses the saved v
 
 Seed variability: `benchmark --repeats 5` repeats the whole run with 5 consecutive seeds and writes `summary/seed_variability.csv` (mean/std macro-F1); `summary/comparison_f1_macro.md` is a ready-to-paste methods x datasets table.
 
+#### Results as text and as figures
+
+Every benchmark run writes both. Nothing needs the images to be understood:
+
+| file | what it is |
+|---|---|
+| `summary/AI_REPORT.md` | one markdown report with everything: run overview, the parameters every method ran with, leaderboards with ~20 metrics, per-level / per-class F1, hardest cell types, top confusions, composition bias, data scarcity, fold variability and paired tests, marker importance, text confusion matrices, and an index of all figures. Paste it into an AI model to review the results. |
+| `summary/AI_REPORT_SHORT.md`, `AI_REPORT.json` | the leaderboards and insights only (a few screens) / the same leaderboards as records |
+| `figures/**/NAME.txt` | a text twin of every figure `NAME.png/svg`: panel titles, axis labels and the plotted numbers (heatmap cells, bar heights, points, annotations) |
+| `analysis/*.csv` | every table behind the figures (`metrics_long.csv` = every metric of every method in one tidy table) |
+| `<dataset>/params_used.json` | the exact parameters each method used |
+
+Metrics per run: accuracy, balanced accuracy, macro / weighted F1, macro / weighted precision and recall, MCC, Cohen's kappa, ARI, NMI, homogeneity, completeness, V-measure, Fowlkes-Mallows, G-mean, hierarchical F1, sensitivity / specificity, rare vs abundant accuracy and F1, unassigned fraction, classes never predicted, composition recovery (R², Pearson, JSD), spatial smoothness of the predictions, runtime, memory, stability, scalability. Figures include ranking, all-metrics and per-class heatmaps, metric ranks, fold variability with 95% CIs, precision vs recall, rare vs abundant, unassigned / missed classes, spatial smoothness, cluster agreement, paired tests against the best method, confusion matrices, spatial maps, composition recovery, data-scarcity curves, runtime / scalability, and cross-dataset ranks and spread. `python cli.py visualize --results <out>` rebuilds all of it from saved results.
+
 ### Evaluation Scripts
 The notebooks in  `src/metrics_scripts` perform the evaluation over all methods. The code blocks withiin `eval_mapping.ipynb` goes through all the methods within a specified dataset and outputs a `final_results.csv` file that contains all of the metrics for different levels. 
 

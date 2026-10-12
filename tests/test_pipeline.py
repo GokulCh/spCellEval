@@ -658,3 +658,26 @@ def test_tuning_uses_validation_never_test_and_writes_summary(data, tmp_path):
     s = pd.read_csv(out / "tuning_summary.csv")
     assert list(s.method) == ["louvain"] and s.tuned.iloc[0] >= s.current.iloc[0]         # the current setting always competes
     assert set(pd.read_csv(out / "tuning_log.csv").stage) == {"s", "f"}
+
+
+# ------------------------------------------------------------------ more metrics, text twins of figures, plain-text report
+def test_more_metrics_and_text_outputs(full_run, tmp_path):
+    from src.evaluation import plots
+    from src.evaluation.metrics import spatial_metrics, supervised_metrics
+    y = np.array(["a", "a", "b", "b", "c", "c"] * 5)
+    p = y.copy()
+    p[0] = "b"
+    m = supervised_metrics(y, p)
+    for k in ("balanced_accuracy", "precision_macro", "recall_macro", "f1_rare_macro", "v_measure", "homogeneity", "unassigned_fraction"):
+        assert k in m
+    assert m["balanced_accuracy"] == pytest.approx(m["recall_macro"]) and m["unassigned_fraction"] == 0
+    assert supervised_metrics(y, np.where(y == "a", "undefined", y))["unassigned_fraction"] == pytest.approx(1 / 3)
+    xy = np.random.default_rng(0).normal(size=(30, 2))
+    assert spatial_metrics(y, y, xy)["spatial_homophily_gap"] == 0
+    plots.heatmap(pd.DataFrame([[0.5, 1.0], [0.25, 0.0]], index=["r1", "r2"], columns=["c1", "c2"]), tmp_path / "h", "Title")
+    twin = (tmp_path / "h.txt").read_text()
+    assert "Title" in twin and "r1" in twin and "c2" in twin and "0.5" in twin               # the figure's numbers as text
+    assert cli.main(["visualize", "--results", str(full_run)]) == 0
+    rep = (full_run / "summary" / "AI_REPORT.md").read_text(encoding="utf-8")
+    assert "Leaderboard" in rep and "precision_macro_mean" in rep and "Figure index" in rep and "Parameters every method ran with" in rep
+    assert (full_run / "summary" / "AI_REPORT_SHORT.md").exists() and list(full_run.rglob("figures/**/*.txt"))

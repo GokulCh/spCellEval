@@ -34,6 +34,11 @@ def _scvi_adata(t: Task, idx: np.ndarray, labelled: np.ndarray | None):
     return a
 
 
+def _train_kw(p: dict) -> dict:
+    """batch_size / learning rate for scvi's train(); only when set (scvi keeps its defaults otherwise)."""
+    return {**({"batch_size": p["batch_size"]} if p["batch_size"] else {}), **({"plan_kwargs": {"lr": p["lr"]}} if p["lr"] else {})}
+
+
 def _accel(t: Task) -> str:
     return "gpu" if t.device == "cuda" else "cpu"
 
@@ -49,8 +54,8 @@ def scanvi(t: Task) -> Result:
     a.obs["labels"] = np.concatenate([y, np.full(len(t.test_idx), "Unknown")])
     SCANVI.setup_anndata(a, labels_key="labels", unlabeled_category="Unknown")
     p = of("scanvi", t.params)
-    m = SCANVI(a, n_latent=p["n_latent"], n_hidden=p["n_hidden"], gene_likelihood="normal")      # data is already transformed, not counts
-    m.train(max_epochs=p["epochs"], accelerator=_accel(t))
+    m = SCANVI(a, n_latent=p["n_latent"], n_hidden=p["n_hidden"], n_layers=p["n_layers"], gene_likelihood="normal")      # data is already transformed, not counts
+    m.train(max_epochs=p["epochs"], accelerator=_accel(t), **_train_kw(p))
     return Result(np.asarray(m.predict(a[len(y):])).astype(str))
 
 
@@ -62,8 +67,8 @@ def scarches(t: Task) -> Result:
     ref = _scvi_adata(t, t.train_idx, y)
     SCANVI.setup_anndata(ref, labels_key="labels", unlabeled_category="Unknown")
     p = of("scarches", t.params)
-    rm = SCANVI(ref, n_latent=p["n_latent"], n_hidden=p["n_hidden"], gene_likelihood="normal")
-    rm.train(max_epochs=p["epochs"], accelerator=_accel(t))
+    rm = SCANVI(ref, n_latent=p["n_latent"], n_hidden=p["n_hidden"], n_layers=p["n_layers"], gene_likelihood="normal")
+    rm.train(max_epochs=p["epochs"], accelerator=_accel(t), **_train_kw(p))
     q = _scvi_adata(t, t.test_idx, None)
     qm = SCANVI.load_query_data(q, rm)
     qm.train(max_epochs=p["query_epochs"], plan_kwargs=dict(weight_decay=0.0),

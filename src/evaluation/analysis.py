@@ -17,6 +17,7 @@ from scipy.stats import spearmanr
 
 from ..models.spatial import spatial_graph
 from ..preprocessing.data import LEVEL_COLUMN, Dataset
+from .extra_tables import extra_tables
 from .metrics import composition_table, top_confusions
 from .repo_assets import (RUNTIME_THRESH_S, STABILITY_THRESH, category, overall_score, scaling_score, to_level)
 
@@ -26,7 +27,9 @@ BASELINES = {"most_frequent", "stratified"}
 EXPORT = {"f1_macro": "macro_f1", "pearson": "pearson_corr"}
 CLASS_METRICS = ["f1_weighted", "accuracy", "f1_macro", "hierarchical_f1", "mcc", "kappa", "ari", "nmi", "g_mean",
                  "r2", "pearson", "jsd", "jsd_scaled", "sensitivity_macro", "specificity_macro", "rare_accuracy",
-                 "abundant_accuracy"]
+                 "abundant_accuracy", "balanced_accuracy", "precision_macro", "recall_macro", "precision_weighted", "recall_weighted",
+                 "f1_rare_macro", "f1_abundant_macro", "n_classes_missed", "unassigned_fraction", "homogeneity", "completeness",
+                 "v_measure", "fowlkes_mallows", "spatial_homophily_true", "spatial_homophily_pred", "spatial_homophily_gap"]
 
 
 # ----------------------------------------------------------------------------- dataset report
@@ -166,8 +169,8 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
     tabs["primary_split"] = pd.DataFrame(dict(dataset=list(prim), primary_split=list(prim.values())))
 
     # every split side by side: 5-fold CV, 80/20 hold-out, progressive fractions, one-pass ('all') ----------------
-    sc = [c for c in ("f1_macro", "f1_weighted", "accuracy", "mcc", "sensitivity_macro", "specificity_macro", "rare_accuracy",
-                      "runtime_s") if c in ok]
+    sc = [c for c in ("f1_macro", "f1_weighted", "accuracy", "balanced_accuracy", "precision_macro", "recall_macro", "mcc", "kappa",
+                      "sensitivity_macro", "specificity_macro", "rare_accuracy", "unassigned_fraction", "runtime_s") if c in ok]
     if sc:
         g = ok.assign(fraction=ok.fraction.fillna(-1)).groupby(["dataset", "method", "split", "fraction"])
         bs = g[sc].mean().reset_index()
@@ -227,6 +230,7 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
                                                   values="f1_macro_mean").reset_index()
         pm = lp[mets].dropna(axis=1, how="all")
         tabs["metric_correlation"] = pm.corr().rename_axis("metric").reset_index()
+        tabs.update(extra_tables(fr, lp, mets, prim, root))
         # efficiency / Pareto
         ef = l3[["dataset", "method", "category", "overall_performance", "run_time", "mem_mb", "scalability"]].copy()
         ef["pareto_optimal"] = False

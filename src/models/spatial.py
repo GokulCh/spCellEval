@@ -54,18 +54,20 @@ def spatial_vote(labels: np.ndarray, xy: np.ndarray, groups: np.ndarray | None, 
 
 @register("spatial_gnn", 4, "supervised", ("sklearn", "scipy"), needs_xy=True)
 def spatial_gnn(t: Task) -> Result:
-    """Simplified graph convolution (SGC): [X, AX, A^2 X] over the spatial kNN graph + logistic regression.
+    """Simplified graph convolution (SGC): [X, AX, ..., A^hops X] over the spatial kNN graph + logistic regression.
 
     Neighbour *features* of train and test cells are used at inference; neighbour labels never are.
     """
     y, p = _need_labels(t), of("spatial_gnn", t.params)
     A = _row_norm(spatial_graph(t.xy, t.groups, t.k_neighbors))
-    AX = A @ t.X
-    F = np.hstack([t.X, AX, A @ AX])
+    hops = [t.X]
+    for _ in range(p["hops"]):
+        hops.append(A @ hops[-1])
+    F = np.hstack(hops)
     m = make_pipeline(StandardScaler(), LogisticRegression(C=p["C"], max_iter=p["max_iter"], class_weight="balanced",
                                                            random_state=t.seed))
     m.fit(F[t.train_idx], y)
-    imp = np.abs(m[-1].coef_).mean(0).reshape(3, t.X.shape[1]).sum(0)
+    imp = np.abs(m[-1].coef_).mean(0).reshape(p["hops"] + 1, t.X.shape[1]).sum(0)
     return Result(m.predict(F[t.test_idx]), imp)
 
 

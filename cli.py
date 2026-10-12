@@ -90,7 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--repeats", type=int, default=1,
                         help="run the whole benchmark with this many consecutive seeds (new folds each) and write mean / std of "
                              "macro-F1 to summary/seed_variability.csv")
-        sp.add_argument("--k-neighbors", type=int, default=10)
+        sp.add_argument("--k-neighbors", type=int, default=10, help="spatial / feature neighbours (vote, spatial metrics, kNN methods; a method's own k_neighbors wins)")
+        sp.add_argument("--val-pct", type=float, default=0.15, help="share of each training fold held out as the validation split")
+        sp.add_argument("--pseudo-min-score", type=float, default=0.5, help="unsupervised mode: min marker score of a confident pseudo-label")
+        sp.add_argument("--pseudo-min-margin", type=float, default=0.25, help="unsupervised mode: min margin over the runner-up type")
         sp.add_argument("--no-plots", action="store_true")
 
     def add(name, **kw):
@@ -425,7 +428,8 @@ def bench_config(a):
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
         level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
         device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None),
-        params_file=getattr(a, "params", None))
+        params_file=getattr(a, "params", None), val_pct=a.val_pct,
+        pseudo_min_score=a.pseudo_min_score, pseudo_min_margin=a.pseudo_min_margin)
 
 
 def cmd_visualize(a) -> None:

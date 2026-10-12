@@ -23,6 +23,13 @@ plt.rcParams.update({"font.size": 9, "axes.spines.top": False, "axes.spines.righ
 def _save(fig, path: Path) -> list[Path]:
     path.parent.mkdir(parents=True, exist_ok=True)
     outs = []
+    try:                                                      # the text twin: everything the figure shows, as plain text
+        from .figure_text import describe
+        path.with_suffix(".txt").write_text(describe(fig, path.stem), encoding="utf-8")
+        outs.append(path.with_suffix(".txt"))
+    except Exception:
+        import logging
+        logging.getLogger("spcelleval").exception("text twin of %s failed", path.name)
     for ext in ("png", "svg"):
         p = path.with_suffix(f".{ext}")
         fig.savefig(p, dpi=250 if ext == "png" else None, bbox_inches="tight")
@@ -117,7 +124,8 @@ def ranking_plots(A: dict, figs: Path, ds: str) -> list[Path]:
     f = fr[fr.dataset == ds]
     mets = [c[:-5] for c in f.columns if c.endswith("_mean") and c[:-5] in
             ("f1_weighted", "hierarchical_f1", "f1_macro", "mcc", "ari", "jsd_scaled", "accuracy", "g_mean", "kappa", "nmi",
-             "sensitivity_macro", "specificity_macro", "rare_accuracy", "abundant_accuracy")]
+             "sensitivity_macro", "specificity_macro", "rare_accuracy", "abundant_accuracy", "balanced_accuracy", "precision_macro",
+             "recall_macro", "f1_rare_macro", "v_measure", "fowlkes_mallows")]
     for lv in sorted(f.eval_level.unique()):
         t = f[f.eval_level == lv].set_index("method")[[m + "_mean" for m in mets]]
         t.columns = mets
@@ -338,12 +346,15 @@ def _spatial_map(pred_csv: Path, path: Path, title: str) -> list[Path]:
 def make_all(out: str | Path) -> list[Path]:
     """Create every figure the saved results allow; each section is independent and failures are reported."""
     import logging
+    from .plots_extra import cross_dataset_plots, extra_plots
+    from .text_report import write_text_report
     root = Path(out)
     a = root / "analysis"
     A = {p.stem: _csv(p) for p in a.glob("*.csv")}
     for k in ("method_ranking", "final_results", "efficiency", "data_scarcity", "per_class_by_method", "class_difficulty",
               "prevalence_vs_f1", "composition_recovery", "level_comparison", "feature_importance_by_method",
-              "feature_importance_consensus", "top_confusions", "spatial_gain", "unsupervised_qc"):
+              "feature_importance_consensus", "top_confusions", "spatial_gain", "unsupervised_qc", "metric_ranks", "fold_variability",
+              "significance_vs_best"):
         A.setdefault(k, pd.DataFrame())
     done: list[Path] = []
 
@@ -361,15 +372,18 @@ def make_all(out: str | Path) -> list[Path]:
         guard(f"{ds}/misc", misc_plots, A, figs, ds)
         if len(A["final_results"]):
             guard(f"{ds}/ranking", ranking_plots, A, figs, ds)
+            guard(f"{ds}/extra", extra_plots, A, figs, ds)
             guard(f"{ds}/classes", class_plots, A, figs, ds) if len(A["per_class_by_method"]) else None
             guard(f"{ds}/composition_recovery", composition_recovery_plot, A, figs, ds) if len(A["composition_recovery"]) else None
             guard(f"{ds}/confusion+maps", confusion_and_maps, root, ds, figs)
     if len(A["final_results"]):
         guard("overall_heatmap", overall_heatmap, A, root / "figures")
         guard("efficiency", efficiency_plots, A, root / "figures")
+        guard("cross-dataset", cross_dataset_plots, A, root / "figures")
     guard("scaling", scaling_curves, A, root / "figures")
     mc = A.get("metric_correlation", pd.DataFrame())
     if len(mc):
         guard("metric_correlation", lambda: heatmap(mc.set_index("metric"), root / "figures" / "metric_correlation",
                                                     "Correlation of metrics", "RdBu_r", -1, 1, cbar="Pearson r"))
+    guard("text report", lambda: [write_text_report(root)])      # AI_REPORT.md / figure index, now that every figure has a text twin
     return done

@@ -132,7 +132,7 @@ def _leiden(c: ScriptCtx) -> list[str]:
 def _flowsom(c: ScriptCtx) -> list[str]:
     k = c.params.get("n_clusters") or c.n_clusters
     return ["-i", str(c.ws.quant), "-m", *c.ws.markers, "-o", str(c.out), "-flow", str(k), "-it", str(c.n_runs),
-            *_cli(c.params, {"xdim": "--xdim", "ydim": "--ydim"})]
+            *_cli(c.params, {"xdim": "--xdim", "ydim": "--ydim", "rlen": "--rlen"})]
 
 
 def _tacit(c: ScriptCtx) -> list[str]:
@@ -157,7 +157,8 @@ def _scyan(c: ScriptCtx) -> list[str]:
     return ["--dataset_path", str(c.ws.quant), "--split_col", c.ws.split_col, "--decision_matrix_path",
             str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu",
-            *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p")})]
+            *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p", "lr", "hidden_size", "n_hidden_layers",
+                                                   "n_layers", "max_epochs", "min_delta")})]
 
 
 def _astir(c: ScriptCtx) -> list[str]:
@@ -181,7 +182,7 @@ def _starling(c: ScriptCtx) -> list[str]:
     return ["--dataset_path", str(c.ws.quant), "--split_col_name", c.ws.split_col, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed),
             *_cli(p, {k: "--" + k for k in ("k_cluster", "initial_clustering", "dist_option", "singlet_prop", "model_cell_size",
-                                            "model_regularizer", "lr", "transform", "scaling")})]
+                                            "model_regularizer", "lr", "transform", "scaling", "max_epochs", "batch_size", "patience", "min_delta")})]
 
 
 def _maps(c: ScriptCtx) -> list[str]:
@@ -288,6 +289,7 @@ def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, t
            "--kfold_method", ws.kfold_method, "--granularity_level", ws.level, "--random_state", str(seed),
            "--n_jobs_model", str(n_jobs), "--scaling", "Yes", "--dumb_columns", ",".join(dumb), "--verbose", "0"]
     kw, params = CLASSIC_KWARGS.get(model), dict(params or {})
+    cmd[cmd.index("--scaling") + 1] = str(params.pop("scaling", "Yes"))        # standardise the markers first (Yes / No)
     extra = [str(x) for x in params.pop("extra_args", [])]
     if params:                                  # the bundled kwargs, overridden by the configured model parameters
         base = json.loads((METHODS / "classic_ml" / kw).read_text()) if kw else {}

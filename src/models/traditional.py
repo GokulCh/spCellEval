@@ -35,7 +35,7 @@ def svm(t: Task) -> Result:
     big = len(y) > p["max_rbf_cells"] or p["kernel"] == "linear"
     clf = LinearSVC(C=p["C"], class_weight=p["class_weight"], random_state=t.seed) if big else \
         SVC(C=p["C"], kernel=p["kernel"], gamma=p["gamma"], class_weight=p["class_weight"], random_state=t.seed)
-    m = make_pipeline(StandardScaler(), clf)
+    m = make_pipeline(StandardScaler(), clf) if p["scale"] else make_pipeline(clf)
     m.fit(t.X_train, y)
     return Result(m.predict(t.X_test), _coef_importance(clf, t.X.shape[1]) if big else None)
 

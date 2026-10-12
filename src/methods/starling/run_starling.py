@@ -32,7 +32,11 @@ def run_starling(
     lr: float,
     n_runs: int,
     output_path: str,
+    train_kwargs: dict = None,
+    patience: int = None,
+    min_delta: float = None,
 ):
+    train_kwargs = train_kwargs or {}   # max_epochs / batch_size, only when set; starling keeps its defaults otherwise
     df = pd.read_csv(dataset_path)
 
     X_columns = df.columns[: df.columns.get_loc(split_col_name)]
@@ -63,13 +67,15 @@ def run_starling(
             learning_rate=lr,
         )
         log_tb = pl.loggers.TensorBoardLogger(save_dir="log")
+        es_kw = {k: v for k, v in (("patience", patience), ("min_delta", min_delta)) if v is not None}
         cb_early_stopping = pl.callbacks.EarlyStopping(
-            monitor="train_loss", mode="min", verbose=False
+            monitor="train_loss", mode="min", verbose=False, **es_kw
         )
         train_start = time.time()
         st.train_and_fit(
             callbacks=[cb_early_stopping],
             logger=[log_tb],
+            **train_kwargs,
         )
 
         train_end = time.time()
@@ -197,6 +203,10 @@ def main():
         help="Path to the output directory",
     )
 
+    parser.add_argument("--max_epochs", type=int, default=None, help="max training epochs (starling default if unset)")
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--patience", type=int, default=None, help="early-stopping patience on train_loss (Lightning default 3)")
+    parser.add_argument("--min_delta", type=float, default=None)
     args = parser.parse_args()
     run_starling(
         dataset_path=args.dataset_path,
@@ -214,6 +224,9 @@ def main():
         lr=args.lr,
         n_runs=args.n_runs,
         output_path=args.output_path,
+        train_kwargs={k: getattr(args, k) for k in ("max_epochs", "batch_size") if getattr(args, k) is not None},
+        patience=args.patience,
+        min_delta=args.min_delta,
     )
 
 

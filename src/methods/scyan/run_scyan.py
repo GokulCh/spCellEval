@@ -32,8 +32,11 @@ def run_scyan(
     patience,
     temperature,
     remove_result_cell_types,
-    output_path
+    output_path,
+    model_kwargs=None,
+    fit_kwargs=None,
 ):
+    model_kwargs, fit_kwargs = model_kwargs or {}, fit_kwargs or {}   # only what was set; Scyan keeps its own defaults otherwise
 
     random.seed(seed)
     np.random.seed(seed)
@@ -79,10 +82,10 @@ def run_scyan(
         if preprocess:
             scyan.preprocess.scale(adata)
         if batch_key is not None:
-            model = scyan.Scyan(adata, table, batch_key=batch_key, prior_std=prior_std, temperature=temperature)
+            model = scyan.Scyan(adata, table, batch_key=batch_key, prior_std=prior_std, temperature=temperature, **model_kwargs)
         else:
-            model = scyan.Scyan(adata, table, prior_std=prior_std, temperature=temperature)
-        model.fit(patience=patience, accelerator=accelerator)
+            model = scyan.Scyan(adata, table, prior_std=prior_std, temperature=temperature, **model_kwargs)
+        model.fit(patience=patience, accelerator=accelerator, **fit_kwargs)
         end_train = time.time()
         start_inference = time.time()
         model.predict()
@@ -223,7 +226,14 @@ def main():
         "--output_path", type=str, help="Path to save the predictions CSV file"
     )
 
+    parser.add_argument("--lr", type=float, default=None, help="Scyan learning rate (library default if unset)")
+    parser.add_argument("--hidden_size", type=int, default=None)
+    parser.add_argument("--n_hidden_layers", type=int, default=None)
+    parser.add_argument("--n_layers", type=int, default=None)
+    parser.add_argument("--max_epochs", type=int, default=None, help="max training epochs of fit() (library default if unset)")
+    parser.add_argument("--min_delta", type=float, default=None, help="early-stopping min_delta of fit()")
     args = parser.parse_args()
+    pick = lambda *ks: {k: getattr(args, k) for k in ks if getattr(args, k) is not None}
 
     run_scyan(
         dataset_path=args.dataset_path,
@@ -243,7 +253,9 @@ def main():
         patience=args.patience,
         temperature=args.temperature,
         remove_result_cell_types=args.remove_result_cell_types,
-        output_path=args.output_path
+        output_path=args.output_path,
+        model_kwargs=pick("lr", "hidden_size", "n_hidden_layers", "n_layers"),
+        fit_kwargs=pick("max_epochs", "min_delta"),
     )
 
 
