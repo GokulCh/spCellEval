@@ -12,6 +12,8 @@
     python cli.py benchmark  --data a.csv b.csv --split all --timeout 1800 --jobs 4
     python cli.py benchmark  --data d.csv --mode unsupervised --marker-matrix m.csv
     python cli.py visualize  --results results/benchmark   # re-run analysis + figures from saved results
+    python cli.py params     --dataset IMMUcan --init       # list every method's parameters; write a per-dataset block to edit
+    python cli.py tune       --data d.csv --methods xgboost,leiden --trials 12   # find the best parameters, save them to configs/method_params.json
 
 Methods accept names, tier1..tier4, 'trainable', 'ready' (only runnable here) or 'all'; a +vote suffix adds
 spatial majority voting.
@@ -69,8 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--batch-correct", choices=["none", "median"], default="none")
         sp.add_argument("--level", choices=["level1", "level2", "level3"], default="level3")
         sp.add_argument("--marker-matrix", help="decision matrix CSV (default: bundled one matching the dataset name)")
-        sp.add_argument("--tacit-resolution", type=int, default=10, help="TACIT resolution r (microclusters of ~0.1-0.5%% of the cells; the TACIT paper used 200 for the CRC dataset)")
-        sp.add_argument("--tacit-dims", type=int, default=10, help="TACIT dimensions p for the microclusters (the paper used 20 for CRC)")
+        sp.add_argument("--params", help="method parameters per dataset (default configs/method_params.json; see `params --help`)")
+        sp.add_argument("--tacit-resolution", type=int, help="TACIT resolution r (default 10, or the params file; the TACIT paper used 200 for the CRC dataset). Overrides the params file")
+        sp.add_argument("--tacit-dims", type=int, help="TACIT dimensions p for the microclusters (default 10; the paper used 20 for CRC). Overrides the params file")
         sp.add_argument("--no-auto-matrix", action="store_true",
                         help="do not create a draft decision matrix from the labels when TACIT / Scyan / Astir / marker_score have none")
         sp.add_argument("--max-cells", type=int, default=0, help="random subsample for quick runs (0 = all)")
@@ -115,6 +118,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--config", help="JSON file written by an earlier pipeline run; command-line flags override it")
     common(add("train", help="train/run selected methods on a single split"), "holdout")
     common(add("benchmark", help="multi-method benchmark (hold-out + CV + progressive)"), "all")
+
+    sp = add("tune", help="search each method's parameters per dataset and write the best into the params file")
+    common(sp, "holdout")
+    sp.set_defaults(out="results/tune")
+    sp.add_argument("--trials", type=int, default=12, help="parameter sets tried per dataset x method (the current setting is always one)")
+    sp.add_argument("--metric", default="f1_macro", help="results column to maximise (e.g. f1_macro, mcc, accuracy)")
+    sp.add_argument("--tune-seed", type=int, default=1000, help="added to --seed for the tuning splits, so they differ from the benchmark's")
+
+    sp = add("params", help="show every method's parameters, defaults and search candidates; --init writes them for a dataset")
+    sp.add_argument("--methods", default="all")
+    sp.add_argument("--dataset", help="dataset name (data file name without _quantification): show / --init its settings")
+    sp.add_argument("--params", help="params file (default configs/method_params.json)")
+    sp.add_argument("--init", action="store_true", help="write the defaults of the chosen methods under --dataset (existing values are kept)")
 
     sp = add("preprocess", help="load, transform, write the repo-layout table and create folds with the repo's run_kfold_creator")
     sp.add_argument("--data", nargs="+", required=True)
@@ -329,20 +345,42 @@ def run_report(res, out: Path) -> str:
     return txt
 
 
+def cmd_params(a) -> None:
+    from src.models import params as mp
+    names = resolve_methods(a.methods)
+    for n in names:
+        space = mp.SPACE.get(n, {})
+        print(f"\n{n}" + ("" if space else "  (no parameters)"))
+        if a.dataset and a.init and space:
+            cur = mp._read(a.params).get(a.dataset, {}).get(n, {})
+            mp.save(a.dataset, n, {**{k: v for k, v in mp.defaults(n).items() if k != "extra_args"}, **cur}, a.params)
+        now = mp.resolve(a.dataset or "", n, path=a.params)
+        for k, (d, cand) in space.items():
+            print(f"  {k:<22} default={d!r:<12} now={now[k]!r:<12} search={cand if cand else '-'}")
+    print(f"\nparams file: {a.params or mp.CONFIG}" + (f"  (wrote defaults for '{a.dataset}')" if a.init and a.dataset else ""))
+
+
+def cmd_tune(a) -> None:
+    from src.evaluation import BenchConfig
+    from src.evaluation.tune import tune
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True,
+                        handlers=[logging.StreamHandler(), logging.FileHandler(out / "tune.log", encoding="utf-8")])
+    cfg = bench_config(a)
+    log = tune(cfg, cfg.methods, a.trials, a.metric, a.tune_seed)
+    print(f"\n{len(log)} trials; log: {out / 'tuning_log.csv'}\nbest values saved to {a.params or 'configs/method_params.json'}")
+    print("note: tuned on hold-out splits that overlap the benchmark's cells, so tuned scores are optimistic - re-run `benchmark` to report.")
+
+
 def cmd_run(a) -> None:
-    from src.evaluation import BenchConfig, run_benchmark, write_reports
+    from src.evaluation import run_benchmark, write_reports
     from src.evaluation.plots import make_all
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True,
                         handlers=[logging.StreamHandler(), logging.FileHandler(out / "benchmark.log", encoding="utf-8")])
-    cfg = BenchConfig(
-        data=a.data, out=a.out, methods=resolve_methods(a.methods), mode=a.mode, split=a.split, folds=a.folds,
-        kfold_method=a.kfold_method, script_runs=a.script_runs, resume=getattr(a, "resume", False), fractions=tuple(float(f) for f in a.fractions.split(",")),
-        modality=a.modality,
-        transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
-        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
-        device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None))
+    cfg = bench_config(a)
     res = run_benchmark(cfg)
     if res.empty:
         raise RuntimeError("no results produced - see benchmark.log")
@@ -352,6 +390,18 @@ def cmd_run(a) -> None:
     print(f"tables: {out / 'summary'}")
     if not a.no_plots:
         print(f"figures: {len(make_all(a.out))} files in {out / 'figures'} and per-dataset figures/")
+
+
+def bench_config(a):
+    from src.evaluation import BenchConfig
+    return BenchConfig(
+        data=a.data, out=a.out, methods=resolve_methods(a.methods), mode=a.mode, split=a.split, folds=a.folds,
+        kfold_method=a.kfold_method, script_runs=a.script_runs, resume=getattr(a, "resume", False), fractions=tuple(float(f) for f in a.fractions.split(",")),
+        modality=a.modality,
+        transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
+        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
+        device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None),
+        params_file=getattr(a, "params", None))
 
 
 def cmd_visualize(a) -> None:
@@ -700,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         {"methods": cmd_methods, "preprocess": cmd_preprocess, "train": cmd_run, "benchmark": cmd_run,
          "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline, "convert": cmd_convert,
-         "marker-template": cmd_marker_template}[a.cmd](a)
+         "marker-template": cmd_marker_template, "tune": cmd_tune, "params": cmd_params}[a.cmd](a)
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return 130

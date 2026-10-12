@@ -21,8 +21,12 @@ def get_args():
     parser.add_argument('input_path', type=str, help='Path to the folder containing the folds data')
     parser.add_argument('results_dir', type=str, help='Path to the folder to save the results')
     parser.add_argument('label_path', type=str, help='Path to the file containing the labels')
+    parser.add_argument('--max_epochs', type=int, default=2, help='Maximum training epochs (default: 2)')
+    parser.add_argument('--min_epochs', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--patience', type=int, default=10, help='Early-stopping patience')
     args = parser.parse_args()
-    
+
     return args
 
 
@@ -30,10 +34,7 @@ def get_args():
 def main(args):
 
     # Define params
-    batch_size = 128
-    max_epochs = 2 #300
-    min_epochs = 1 #50
-    patience = 10
+    batch_size, max_epochs, min_epochs, patience = args.batch_size, args.max_epochs, args.min_epochs, args.patience
     verbose = 0
     
     # Define the list of fold numbers

@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC, LinearSVC
 
 from .base import MethodUnavailable, Result, Task, register
+from .params import of
 
 
 def _need_labels(t: Task) -> np.ndarray:
@@ -29,11 +30,11 @@ def _coef_importance(model, n_feat: int):
 
 @register("svm", 1, "supervised", ("sklearn",))
 def svm(t: Task) -> Result:
-    """RBF SVM up to 20k training cells, LinearSVC beyond (SVC is O(n^2))."""
-    y = _need_labels(t)
-    big = len(y) > 20_000
-    clf = LinearSVC(class_weight="balanced", random_state=t.seed) if big else \
-        SVC(kernel="rbf", class_weight="balanced", random_state=t.seed)
+    """SVM (RBF by default) up to max_rbf_cells training cells, LinearSVC beyond (SVC is O(n^2))."""
+    y, p = _need_labels(t), of("svm", t.params)
+    big = len(y) > p["max_rbf_cells"] or p["kernel"] == "linear"
+    clf = LinearSVC(C=p["C"], class_weight=p["class_weight"], random_state=t.seed) if big else \
+        SVC(C=p["C"], kernel=p["kernel"], gamma=p["gamma"], class_weight=p["class_weight"], random_state=t.seed)
     m = make_pipeline(StandardScaler(), clf)
     m.fit(t.X_train, y)
     return Result(m.predict(t.X_test), _coef_importance(clf, t.X.shape[1]) if big else None)
@@ -52,7 +53,7 @@ def louvain(t: Task) -> Result:
     """Louvain communities on a kNN graph (networkx)."""
     import networkx as nx
     g = nx.from_scipy_sparse_array(kneighbors_graph(t.X_test, t.k_neighbors, include_self=False))
-    comm = nx.community.louvain_communities(g, resolution=t.params.get("resolution", 1.0), seed=t.seed)
+    comm = nx.community.louvain_communities(g, resolution=of("louvain", t.params)["resolution"], seed=t.seed)
     lab = np.zeros(len(t.X_test), int)
     for i, c in enumerate(comm):
         lab[list(c)] = i
@@ -61,9 +62,10 @@ def louvain(t: Task) -> Result:
 
 @register("spade", 1, "cluster", ("sklearn",))
 def spade(t: Task) -> Result:
-    """SPADE-style: downsample (<=5k, uniform), agglomerative cluster, up-sample by nearest centroid."""
+    """SPADE-style: downsample (<=max_cells, uniform), agglomerative cluster, up-sample by nearest centroid."""
+    p = of("spade", t.params)
     X, rng = t.X_test, np.random.default_rng(t.seed)
-    sub = rng.choice(len(X), min(5000, len(X)), replace=False)   # ponytail: uniform, SPADE is density-dependent
-    lab = AgglomerativeClustering(n_clusters=min(_k(t), len(sub)), linkage="ward").fit_predict(X[sub])
+    sub = rng.choice(len(X), min(p["max_cells"], len(X)), replace=False)   # ponytail: uniform, SPADE is density-dependent
+    lab = AgglomerativeClustering(n_clusters=min(_k(t), len(sub)), linkage=p["linkage"]).fit_predict(X[sub])
     cents = np.stack([X[sub][lab == c].mean(0) for c in np.unique(lab)])
     return Result(_cid(pairwise_distances_argmin(X, cents)))

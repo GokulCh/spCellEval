@@ -5,6 +5,7 @@ import numpy as np
 from scipy.stats import rankdata
 
 from .base import MethodUnavailable, Result, Task, register
+from .params import of
 from .traditional import _need_labels
 
 
@@ -16,9 +17,10 @@ def singler(t: Task) -> Result:
     iterative fine-tuning step of the R package is not included.
     """
     y = _need_labels(t)
+    n_top = of("singler", t.params)["n_top"]
     types = np.unique(y)
     ref = np.stack([t.X_train[y == c].mean(0) for c in types])
-    top = np.argsort(ref.var(0))[::-1][:min(500, ref.shape[1])]
+    top = np.argsort(ref.var(0))[::-1][:min(n_top, ref.shape[1])]
     R, Q = rankdata(ref[:, top], axis=1), rankdata(t.X_test[:, top], axis=1)
     R, Q = R - R.mean(1, keepdims=True), Q - Q.mean(1, keepdims=True)
     corr = (Q @ R.T) / (np.linalg.norm(Q, axis=1, keepdims=True) * np.linalg.norm(R, axis=1) + 1e-12)
@@ -46,8 +48,9 @@ def scanvi(t: Task) -> Result:
     a = ad.AnnData(t.X[idx].astype(np.float32))
     a.obs["labels"] = np.concatenate([y, np.full(len(t.test_idx), "Unknown")])
     SCANVI.setup_anndata(a, labels_key="labels", unlabeled_category="Unknown")
-    m = SCANVI(a, gene_likelihood="normal")      # data is already transformed, not counts
-    m.train(max_epochs=t.params.get("epochs", 50), accelerator=_accel(t))
+    p = of("scanvi", t.params)
+    m = SCANVI(a, n_latent=p["n_latent"], n_hidden=p["n_hidden"], gene_likelihood="normal")      # data is already transformed, not counts
+    m.train(max_epochs=p["epochs"], accelerator=_accel(t))
     return Result(np.asarray(m.predict(a[len(y):])).astype(str))
 
 
@@ -58,10 +61,11 @@ def scarches(t: Task) -> Result:
     y = _need_labels(t)
     ref = _scvi_adata(t, t.train_idx, y)
     SCANVI.setup_anndata(ref, labels_key="labels", unlabeled_category="Unknown")
-    rm = SCANVI(ref, gene_likelihood="normal")
-    rm.train(max_epochs=t.params.get("epochs", 50), accelerator=_accel(t))
+    p = of("scarches", t.params)
+    rm = SCANVI(ref, n_latent=p["n_latent"], n_hidden=p["n_hidden"], gene_likelihood="normal")
+    rm.train(max_epochs=p["epochs"], accelerator=_accel(t))
     q = _scvi_adata(t, t.test_idx, None)
     qm = SCANVI.load_query_data(q, rm)
-    qm.train(max_epochs=t.params.get("query_epochs", 20), plan_kwargs=dict(weight_decay=0.0),
+    qm.train(max_epochs=p["query_epochs"], plan_kwargs=dict(weight_decay=0.0),
              accelerator=_accel(t))
     return Result(np.asarray(qm.predict()).astype(str))

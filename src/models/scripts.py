@@ -44,10 +44,8 @@ class ScriptCtx:
     device: str = "cpu"
     n_clusters: int = 20
     marker_matrix: Path | None = None           # user-supplied decision matrix (csv)
-    resolutions: tuple = (0.5, 0.8, 1.0, 2.0)
     has_area: bool = False
-    tacit_r: int = 10                           # TACIT resolution (microclusters of ~0.1-0.5% of the cells each)
-    tacit_p: int = 10                           # TACIT number of dimensions for the microclusters
+    params: dict = field(default_factory=dict)  # explicit settings from configs/method_params.json (see params.py); script defaults otherwise
 
     @property
     def dataset(self) -> str:
@@ -115,13 +113,26 @@ def _tribus_xlsx(ctx: ScriptCtx) -> Path:
 
 
 # ----------------------------------------------------------------------------- command builders (the scripts' own CLIs)
+def _cli(p: dict, flags: dict[str, str]) -> list[str]:
+    """Configured parameters -> the script's own options: ``{param: flag}``. None / False are not passed, True is a bare
+    switch, a list is an nargs option. ``extra_args`` (raw tokens) are appended."""
+    out = []
+    for k, flag in flags.items():
+        v = p.get(k)
+        if v is not None and v is not False:
+            out += [flag] if v is True else [flag, *map(str, v if isinstance(v, list) else [v])]
+    return out + [str(x) for x in p.get("extra_args", [])]
+
+
 def _leiden(c: ScriptCtx) -> list[str]:
     return ["-i", str(c.ws.quant), "-o", str(c.out), "-m", *c.ws.markers, "-it", str(c.n_runs), "-l", "short",
-            "-r", *[str(r) for r in c.resolutions]]
+            *_cli(c.params, {"resolutions": "-r", "n_neighbors": "--n_neighbors", "pca": "-p", "n_pcs": "--n_pcs"})]
 
 
 def _flowsom(c: ScriptCtx) -> list[str]:
-    return ["-i", str(c.ws.quant), "-m", *c.ws.markers, "-o", str(c.out), "-flow", str(c.n_clusters), "-it", str(c.n_runs)]
+    k = c.params.get("n_clusters") or c.n_clusters
+    return ["-i", str(c.ws.quant), "-m", *c.ws.markers, "-o", str(c.out), "-flow", str(k), "-it", str(c.n_runs),
+            *_cli(c.params, {"xdim": "--xdim", "ydim": "--ydim"})]
 
 
 def _tacit(c: ScriptCtx) -> list[str]:
@@ -134,7 +145,7 @@ def _tacit(c: ScriptCtx) -> list[str]:
     m.to_csv(path)
     return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(path),
             "--separate_col", c.ws.split_col, "--output_path", str(c.out), "-n", str(c.n_runs),
-            "-r", str(c.tacit_r), "-p", str(c.tacit_p)]
+            *_cli(c.params, {"r": "-r", "p": "-p"})]
 
 
 def _scyan(c: ScriptCtx) -> list[str]:
@@ -145,25 +156,32 @@ def _scyan(c: ScriptCtx) -> list[str]:
     m.to_csv(path)
     return ["--dataset_path", str(c.ws.quant), "--split_col", c.ws.split_col, "--decision_matrix_path",
             str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
-            "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu"]
+            "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu",
+            *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p")})]
 
 
 def _astir(c: ScriptCtx) -> list[str]:
     return ["--quant_path", str(c.ws.quant), "--decision_matrix_path", str(_astir_yaml(c)), "--separate_col",
             c.ws.last_marker, "--output_path", str(c.out), "--n_runs", str(c.n_runs), "--random_seed", str(c.seed),
-            "--device", "cuda" if c.device == "cuda" else "cpu"]
+            "--device", "cuda" if c.device == "cuda" else "cpu",
+            *_cli(c.params, {k: "--" + k for k in ("max_epochs", "n_init", "n_init_epochs", "delta_loss", "learning_rate",
+                                                   "batch_size", "scaling", "log1p")})]
 
 
 def _tribus(c: ScriptCtx) -> list[str]:
     return ["--dataset_path", str(c.ws.quant), "--columns_to_use", ",".join(c.ws.markers), "--decision_matrix_path",
             str(_tribus_xlsx(c)), "--granularity_level", c.ws.level, "--output_path", str(c.out), "--n_runs",
-            str(c.n_runs), "--seed", str(c.seed)]
+            str(c.n_runs), "--seed", str(c.seed),
+            *_cli(c.params, {k: "--" + k for k in ("sigma", "learning_rate", "clustering_threshold", "undefined_threshold",
+                                                   "other_threshold", "depth", "scaling", "log1p", "normalization", "tuning")})]
 
 
 def _starling(c: ScriptCtx) -> list[str]:
-    a = ["--dataset_path", str(c.ws.quant), "--split_col_name", c.ws.split_col, "--output_path", str(c.out),
-         "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--k_cluster", str(min(c.n_clusters, 50))]
-    return a if c.has_area else a + ["--model_cell_size", "N"]
+    p = {"k_cluster": min(c.n_clusters, 50), "model_cell_size": "Y" if c.has_area else "N", **{k: v for k, v in c.params.items() if v is not None}}
+    return ["--dataset_path", str(c.ws.quant), "--split_col_name", c.ws.split_col, "--output_path", str(c.out),
+            "--n_runs", str(c.n_runs), "--seed", str(c.seed),
+            *_cli(p, {k: "--" + k for k in ("k_cluster", "initial_clustering", "dist_option", "singlet_prop", "model_cell_size",
+                                            "model_regularizer", "lr", "transform", "scaling")})]
 
 
 def _maps(c: ScriptCtx) -> list[str]:
@@ -173,13 +191,16 @@ def _maps(c: ScriptCtx) -> list[str]:
     dst.mkdir(parents=True, exist_ok=True)
     for f in src.glob("fold_*_*.csv"):
         pd.read_csv(f, usecols=[*c.ws.markers, "encoded_phenotype"]).to_csv(dst / f.name, index=False)
-    return [str(dst), str(c.out), str(c.ws.labels)]
+    return [str(dst), str(c.out), str(c.ws.labels),
+            *_cli(c.params, {k: "--" + k for k in ("max_epochs", "min_epochs", "batch_size", "patience")})]
 
 
 def _stellar(c: ScriptCtx) -> list[str]:
     """run_stellar_table.py: the table version of STELLAR (graph per image from the x/y columns, pipeline folds)."""
     return ["--quant", str(c.ws.quant), "--folds_dir", str(c.ws.kdir), "--output_dir", str(c.out),
             "--label_col", LEVEL_COLUMN[c.ws.level], "--device", "cuda" if c.device == "cuda" else "cpu", "--seed", str(c.seed),
+            *_cli(c.params, {"hid_dim": "--hid_dim", "distance_threshold": "--distance_threshold", "epochs": "--epochs", "lr": "--lr",
+                             "weight_decay": "--weight_decay", "image_batch_size": "--image_batch_size"}),
             "--markers", *c.ws.markers]
 
 
@@ -255,7 +276,7 @@ def parse_fold_times(path: Path) -> dict[int, float]:
     return t
 
 
-def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, timeout: float) -> dict:
+def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, timeout: float, params: dict | None = None) -> dict:
     """Run methods/classic_ml/run_classic_ml_default.py in its ``--main_dir`` mode on ``root`` (the workspace root or a
     single-fold variant root; both use the repo's datasets/<name>/quantification/processed layout). The script then
     writes ``<root>/results/<name>/<model>_default_<kfold>/<level>/`` with predictions_fold_<i>.csv, fold_times.txt and
@@ -266,9 +287,17 @@ def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, t
     cmd = [spec.interpreter(), str(METHODS / spec.script), "--main_dir", str(root), "--model", model,
            "--kfold_method", ws.kfold_method, "--granularity_level", ws.level, "--random_state", str(seed),
            "--n_jobs_model", str(n_jobs), "--scaling", "Yes", "--dumb_columns", ",".join(dumb), "--verbose", "0"]
-    kw = CLASSIC_KWARGS.get(model)
-    if kw:
+    kw, params = CLASSIC_KWARGS.get(model), dict(params or {})
+    extra = [str(x) for x in params.pop("extra_args", [])]
+    if params:                                  # the bundled kwargs, overridden by the configured model parameters
+        base = json.loads((METHODS / "classic_ml" / kw).read_text()) if kw else {}
+        kw = ws.root / "params" / f"{model}.json"
+        kw.parent.mkdir(parents=True, exist_ok=True)
+        kw.write_text(json.dumps({**base, **params}))
+        cmd += ["--model_kwargs", str(kw)]
+    elif kw:
         cmd += ["--model_kwargs", str(METHODS / "classic_ml" / kw)]
+    cmd += extra
     r = _run(cmd, METHODS / "classic_ml", timeout, ws.root / "logs" / f"{model}_{root.name}.log")
     out = root / "results" / ws.name / f"{model}_default_{ws.kfold_method}" / ws.level
     r["out"] = out

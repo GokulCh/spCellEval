@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from ..models import REGISTRY, MethodUnavailable, Task, resolve_device, run_isolated
+from ..models import params as mparams
 from ..models.marker import AUTO_NOTE, PRIOR_METHODS, draft_matrix, find_marker_matrix, load_marker_matrix, pseudo_labels
 from ..models.scripts import ScriptCtx, classic_importance, parse_fold_times, run_classic, run_script
 from ..models.spatial import spatial_vote
@@ -76,8 +77,11 @@ class BenchConfig:
     level: str = "level3"
     marker_matrix: str | None = None
     order: str = "fast-first"             # fast-first | slow-first | listed (queue order of the methods)
-    tacit_r: int = 10
-    tacit_p: int = 10
+    tacit_r: int | None = None             # shortcuts for the tacit parameters r / p (override the params file when set)
+    tacit_p: int | None = None
+    params_file: str | None = None         # method parameters per dataset (default configs/method_params.json, see models/params.py)
+    overrides: dict = field(default_factory=dict)   # {method: {param: value}} on top of the params file (used by the tuner)
+    report: bool = True                    # write the dataset report (the tuner turns it off)
     auto_matrix: bool = True               # build a draft decision matrix from the labels when a marker method has none
     max_cells: int = 0
     timeout: float = 0.0
@@ -125,9 +129,16 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     if sup and ds.y is None:
         raise ValueError(f"{ds.name}: supervised mode needs a '{cfg.level}' label column")
     try:
-        dataset_report(ds, cfg.out, cfg.level)
+        if cfg.report:
+            dataset_report(ds, cfg.out, cfg.level)
     except Exception:
         log.exception("%s: dataset report failed (continuing)", ds.name)
+
+    def P(method: str, explicit: bool = False) -> dict:
+        """The method's parameters for this dataset: params file, then cfg.overrides (and the tacit shortcuts)."""
+        ov = {**{k: v for k, v in (("r", cfg.tacit_r), ("p", cfg.tacit_p)) if v is not None and method == "tacit"},
+              **cfg.overrides.get(method, {})}
+        return mparams.resolve(ds.name, method, ov, cfg.params_file, explicit)
 
     mpath = cfg.marker_matrix or find_marker_matrix(ds.name, cfg.level)
     auto_prior = False
@@ -292,7 +303,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                         runs.append(("progressive", lambda j=j: make_variant(ws_tr, f"{base}_p{j['fraction']}", 0, j["tr"]), j["fraction"], j))
                 for sp, root_fn, fr, j in runs:
                     try:
-                        r = run_classic(base, root_fn(), ws_tr, cfg.seed, cfg.n_jobs_model, cfg.timeout)
+                        r = run_classic(base, root_fn(), ws_tr, cfg.seed, cfg.n_jobs_model, cfg.timeout, P(base, True))
                     except Exception as e:                                   # one failing unit must not drop the others
                         add(sp, 0, fr if fr is not None else NAN, dict(status="failed", error=f"{type(e).__name__}: {e}"),
                             None, None, "", NAN)
@@ -313,7 +324,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 ctx = ScriptCtx(ws_all, out_dir / ("_runs" if spec.nested else base) / (base if spec.nested else cfg.level),
                                 cfg.script_runs, cfg.seed, device, n_classes,
                                 Path(cfg.marker_matrix) if cfg.marker_matrix else (Path(mpath) if auto_prior else None),
-                                has_area="area" in ds.meta, tacit_r=cfg.tacit_r, tacit_p=cfg.tacit_p)
+                                has_area="area" in ds.meta, params=P(base, True))
                 if spec.mode == "folds":                                  # e.g. MAPS: reads the repo's fold dir (cv only)
                     if not folds:
                         return skip("no training folds")
@@ -378,8 +389,10 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
 
     def native_runs(base, m):
         recs = []
+        p = P(base)
         task_kw = dict(markers=ds.markers, xy=ds.xy, groups=ds.groups, marker_matrix=matrix, device=device, seed=cfg.seed,
-                       n_jobs=cfg.n_jobs_model, k_neighbors=cfg.k_neighbors, n_clusters=n_classes, timeout=cfg.timeout)
+                       n_jobs=cfg.n_jobs_model, k_neighbors=p.get("k_neighbors") or cfg.k_neighbors,
+                       n_clusters=p.get("n_clusters") or n_classes, timeout=cfg.timeout, params=p)
         if m.trainable:
             if not folds:
                 raise MethodUnavailable("no training folds (needs labels or >= 2 pseudo-label classes)")

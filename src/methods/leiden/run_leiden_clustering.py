@@ -26,6 +26,8 @@ parser.add_argument('-ha', '--harmony', dest='harmony', action='store_true', hel
 parser.add_argument('-l', '--log', dest='log', required= False, default='off', choices=['short', 'long', 'off'], help='Logging level: short, long, or off (default: long)')
 parser.add_argument('-it', '--iterations', dest='iterations', type=int, required= False, default=5, help='Number of iterations to run (default: 5)')
 parser.add_argument('-r', '--resolutions', dest='resolutions', nargs='+', type=float, required= False, default=[0.5, 0.8, 1.0, 2.0], help='List of resolutions for Leiden clustering (default: [0.5, 0.8, 1.0, 2.0])')
+parser.add_argument('--n_neighbors', dest='n_neighbors', type=int, default=10, help='Neighbours of the kNN graph (default: 10)')
+parser.add_argument('--n_pcs', dest='n_pcs', type=int, default=30, help='PCA components when --PCA or --harmony is used (default: 30)')
 args = parser.parse_args()
 
 # define parameters
@@ -68,14 +70,14 @@ def preprocessing(input, markers, PCA, normalization, arcsine, harmony):
         sc.pp.normalize_total(adata, target_sum=1)
 
     if PCA == True:
-        sc.pp.pca(adata, n_comps=30)
-        sc.pp.neighbors(adata, n_neighbors=10, use_rep='X_pca')
+        sc.pp.pca(adata, n_comps=args.n_pcs)
+        sc.pp.neighbors(adata, n_neighbors=args.n_neighbors, use_rep='X_pca')
     elif harmony == True:
-        sc.pp.pca(adata, n_comps=30)
+        sc.pp.pca(adata, n_comps=args.n_pcs)
         sc.external.pp.harmony_integrate(adata, 'sample_id', basis='X_pca', adjusted_basis='X_harmony')
-        sc.pp.neighbors(adata, n_neighbors=10, use_rep='X_harmony')
+        sc.pp.neighbors(adata, n_neighbors=args.n_neighbors, use_rep='X_harmony')
     else:
-        sc.pp.neighbors(adata, n_neighbors=10)
+        sc.pp.neighbors(adata, n_neighbors=args.n_neighbors)
     return adata, df
 
 # Define Leiden clustering with greedy assignment function

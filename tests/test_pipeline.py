@@ -593,7 +593,7 @@ def test_tacit_adapter_writes_the_matrix_format_tacit_expects(data, tmp_path, ca
     from src.preprocessing import build_workspace, load_dataset, transform
     ds = transform(load_dataset(data[0]))
     ws = build_workspace(ds, ds.y, tmp_path / "ws", make_folds=False)
-    ctx = scripts_mod.ScriptCtx(ws, tmp_path / "out", marker_matrix=_raw_name_matrix(tmp_path), tacit_r=200, tacit_p=20)
+    ctx = scripts_mod.ScriptCtx(ws, tmp_path / "out", marker_matrix=_raw_name_matrix(tmp_path), params=dict(r=200, p=20))
     args = scripts_mod._tacit(ctx)
     written = pd.read_csv(args[args.index("--decision_matrix_path") + 1])
     assert list(written.columns) == ["cell_type", "CD68", "CD20", "PanCK"]          # first column cell_type; names = the data's columns
@@ -603,3 +603,37 @@ def test_tacit_adapter_writes_the_matrix_format_tacit_expects(data, tmp_path, ca
     sc = scripts_mod._scyan(ctx)                                                   # Scyan gets the same conformed names (and keeps -1)
     s_m = pd.read_csv(sc[sc.index("--decision_matrix_path") + 1], index_col=0)
     assert list(s_m.columns) == ["CD68", "CD20", "PanCK"] and s_m.loc["Cancer", "CD68"] == -1
+
+
+# ------------------------------------------------------------------ per-dataset method parameters + tuning
+def test_params_precedence_validation_and_script_flags(tmp_path):
+    from src.models import params as mp
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"default": {"xgboost": {"max_depth": 4}}, "toy": {"xgboost": {"max_depth": 9}}}))
+    assert mp.resolve("toy", "xgboost", None, f)["max_depth"] == 9                       # dataset beats default
+    assert mp.resolve("other", "xgboost", None, f)["max_depth"] == 4
+    assert mp.resolve("toy", "xgboost", {"max_depth": 2}, f, explicit=True) == {"max_depth": 2}   # override beats file
+    assert mp.resolve("toy", "xgboost", None, tmp_path / "none.json")["max_depth"] == 6            # code default
+    with pytest.raises(ValueError, match="unknown parameter"):
+        mp.resolve("toy", "xgboost", {"typo": 1}, f)
+    mp.save("toy", "leiden", {"resolutions": [0.8]}, f)
+    assert json.loads(f.read_text())["toy"]["xgboost"] == {"max_depth": 9}               # save merges, keeps the rest
+    cli_args = scripts_mod._cli({"resolutions": [0.5, 1.0], "pca": True, "n_neighbors": 15, "log1p": False, "extra_args": ["--x", 1]},
+                                {"resolutions": "-r", "pca": "-p", "n_neighbors": "--n_neighbors", "log1p": "--log1p"})
+    assert cli_args == ["-r", "0.5", "1.0", "-p", "--n_neighbors", "15", "--x", "1"]
+    t = mp.trials("louvain", 5, 0, {"resolution": 1.0, "k_neighbors": None})
+    assert len(t) == 5 and t[0] == {"resolution": 1.0, "k_neighbors": None} and len({json.dumps(x) for x in t}) == 5
+
+
+def test_native_method_reads_params_and_tune_writes_the_best(data, tmp_path):
+    p, _ = data
+    pf = tmp_path / "params.json"
+    out = tmp_path / "tune"
+    assert cli.main(["tune", "--data", str(p), "--out", str(out), "--methods", "louvain", "--trials", "3", "--params", str(pf),
+                     "--max-cells", "600"]) == 0
+    log = pd.read_csv(out / "tuning_log.csv")
+    assert len(log) == 3 and log.method.eq("louvain").all()
+    best = json.loads(pf.read_text())["toy"]["louvain"]
+    assert set(best) == {"resolution", "k_neighbors"}
+    top = log.loc[log.f1_macro.idxmax()]                                                  # the saved set is the best-scoring trial
+    assert json.loads(top.params) == best

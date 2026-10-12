@@ -58,6 +58,23 @@ For installation, and method specific details like runtime, please refer to each
 
 The expected output from each method is a `predictions_*.csv` file for each fold chosen and a `fold_time.txt` recording running times if chosen.
 
+#### Method parameters and automatic tuning
+
+Every method's parameters are configurable per dataset in `configs/method_params.json` (the dataset key is the data file name without `_quantification`; a `"default"` block applies to all datasets; anything unset keeps the method's own default):
+
+```json
+{"default": {"leiden": {"resolutions": [0.8]}},
+ "IMMUcan": {"xgboost": {"n_estimators": 250, "max_depth": 8}, "tacit": {"r": 50, "p": 20}}}
+```
+
+```bash
+python cli.py params --dataset IMMUcan --init          # list all parameters/defaults/search values; write an editable IMMUcan block
+python cli.py tune --data IMMUcan_quantification.csv --methods xgboost,leiden,tacit --trials 12   # search, then save the best values to the file
+python cli.py benchmark --data IMMUcan_quantification.csv     # uses the saved values (--params FILE to use another file)
+```
+
+`tune` scores each candidate (grid in `src/models/params.py`) on a hold-out split with a different seed than the benchmark's (`--tune-seed`) and keeps the best `--metric` (default `f1_macro`); every trial is logged to `<out>/tuning_log.csv`. Tuned scores are optimistic, so report the numbers from a fresh `benchmark` run. `extra_args` passes raw CLI tokens to script-based methods for options not listed.
+
 ### Evaluation Scripts
 The notebooks in  `src/metrics_scripts` perform the evaluation over all methods. The code blocks withiin `eval_mapping.ipynb` goes through all the methods within a specified dataset and outputs a `final_results.csv` file that contains all of the metrics for different levels. 
 

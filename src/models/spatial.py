@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.exceptions import ConvergenceWarning
 
 from .base import Result, Task, register
+from .params import of
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 from .traditional import _need_labels
@@ -57,24 +58,23 @@ def spatial_gnn(t: Task) -> Result:
 
     Neighbour *features* of train and test cells are used at inference; neighbour labels never are.
     """
-    y = _need_labels(t)
+    y, p = _need_labels(t), of("spatial_gnn", t.params)
     A = _row_norm(spatial_graph(t.xy, t.groups, t.k_neighbors))
     AX = A @ t.X
     F = np.hstack([t.X, AX, A @ AX])
-    m = make_pipeline(StandardScaler(), LogisticRegression(max_iter=300, class_weight="balanced",
+    m = make_pipeline(StandardScaler(), LogisticRegression(C=p["C"], max_iter=p["max_iter"], class_weight="balanced",
                                                            random_state=t.seed))
     m.fit(F[t.train_idx], y)
-    p = t.X.shape[1]
-    imp = np.abs(m[-1].coef_).mean(0).reshape(3, p).sum(0)
+    imp = np.abs(m[-1].coef_).mean(0).reshape(3, t.X.shape[1]).sum(0)
     return Result(m.predict(F[t.test_idx]), imp)
 
 
 @register("knn_smooth", 4, "supervised", ("sklearn", "scipy"), needs_xy=True)
 def knn_smooth(t: Task) -> Result:
     """Spatial neighbourhood smoothing of marker expression (0.5*self + 0.5*neighbour mean) + random forest."""
-    y = _need_labels(t)
+    y, p = _need_labels(t), of("knn_smooth", t.params)
     A = _row_norm(spatial_graph(t.xy, t.groups, t.k_neighbors))
-    Xs = 0.5 * t.X + 0.5 * (A @ t.X)
-    m = RandomForestClassifier(n_estimators=200, class_weight="balanced", n_jobs=t.n_jobs, random_state=t.seed)
+    Xs = (1 - p["alpha"]) * t.X + p["alpha"] * (A @ t.X)
+    m = RandomForestClassifier(n_estimators=p["n_estimators"], max_depth=p["max_depth"], class_weight="balanced", n_jobs=t.n_jobs, random_state=t.seed)
     m.fit(Xs[t.train_idx], y)
     return Result(m.predict(Xs[t.test_idx]), m.feature_importances_)

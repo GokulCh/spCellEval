@@ -1,0 +1,4 @@
+{
+  "_comment": "Method parameters. 'default' applies to every dataset; a dataset's own block (its data-file name without _quantification) wins. Unset parameters keep the method's default. List all with `python cli.py params`; fill in a dataset with `params --dataset NAME --init`; `python cli.py tune` writes the best values here.",
+  "default": {}
+}
