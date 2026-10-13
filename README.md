@@ -79,6 +79,8 @@ Seed variability: `benchmark --repeats 5` repeats the whole run with 5 consecuti
 
 The shipped `configs/method_params.json` already holds best-judgement settings for every method (rationale per method under `_notes`). They are not tuned on your data: validate the file with `python cli.py params --check`, run `benchmark`, and refine with `tune`. Each run's report starts with a sanity-check section that flags methods with identical predictions, single-class predictions or mostly unassigned cells.
 
+On a Slurm cluster, `sbatch slurm/run_pipeline_tuned.sbatch` runs params check, optional tuning (`TUNE=1`), benchmark, figures and the text report in one job; `SMOKE=1` does a quick 20k-cell check first (settings are listed at the top of the file).
+
 #### Results as text and as figures
 
 Every benchmark run writes both. Nothing needs the images to be understood:
