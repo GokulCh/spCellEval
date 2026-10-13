@@ -55,7 +55,7 @@ SPACE: dict[str, dict[str, tuple]] = {
     "flowsom": {"n_clusters": (None, _C(10, 15, 20, 30, 40)), "xdim": (10, _C(5, 10, 15)), "ydim": (10, _C(5, 10, 15)),
                 "rlen": (10, _C(10, 30, 100)), "mst": (1, _C(1, 3)), "distf": (2, _C(1, 2))},
     "tacit": {"r": (10, _C(10, 25, 50, 100, 200)), "p": (10, _C(5, 10, 20))},
-    "scyan": {"preprocess": (False, _C(False, True)), "prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
+    "scyan": {"preprocess": (False, _C(False, True)), "zeros_as_nan": (False, _C(False, True)), "prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
               "scaling": (None, []), "log1p": (False, []),
               "lr": (None, _C(0.00025, 0.0005, 0.001)), "hidden_size": (None, _C(16, 32, 64)), "n_hidden_layers": (None, _C(4, 6, 8)),
               "n_layers": (None, _C(5, 7, 10)), "max_epochs": (None, _C(50, 100, 200)), "min_delta": (None, _C(0.25, 0.5, 1.0)),

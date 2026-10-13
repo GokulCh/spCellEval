@@ -41,7 +41,7 @@
     "leiden": {"resolutions": [0.5, 1.0, 2.0, 3.0, 5.0], "n_neighbors": 15, "pca": false, "normalization": false},
     "flowsom": {"n_clusters": 40, "xdim": 15, "ydim": 15, "rlen": 30, "mst": 1, "distf": 2},
     "tacit": {"r": 100, "p": 20},
-    "scyan": {"preprocess": true, "prior_std": 0.3, "patience": 10, "temperature": 0.5, "max_epochs": 200, "min_delta": 0.1, "max_samples": 500000},
+    "scyan": {"preprocess": true, "zeros_as_nan": true,"prior_std": 0.3, "patience": 10, "temperature": 0.5, "max_epochs": 200, "min_delta": 0.1, "max_samples": 500000},
     "astir": {"max_epochs": 100, "n_init": 10, "n_init_epochs": 10, "delta_loss": 0.0001, "learning_rate": 0.001, "batch_size": 256,
               "assignment_type": "max"},
     "tribus": {"outlier_quantile": 1.0, "clustering_threshold": 15000.0, "undefined_threshold": 0.0005, "other_threshold": 0.2, "depth": 3,

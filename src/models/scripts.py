@@ -151,6 +151,8 @@ def _tacit(c: ScriptCtx) -> list[str]:
 def _scyan(c: ScriptCtx) -> list[str]:
     m = _conformed(c, "scyan")
     m.index.name = "Populations"
+    if c.params.get("zeros_as_nan"):
+        m = m.mask(m == 0)      # Scyan reads 0 as "expressed at the mean"; NaN means "marker not relevant for this type"
     path = c.ws.root / "scyan_matrix.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     m.to_csv(path)
