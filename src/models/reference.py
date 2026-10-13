@@ -36,7 +36,9 @@ def _scvi_adata(t: Task, idx: np.ndarray, labelled: np.ndarray | None):
 
 def _train_kw(p: dict) -> dict:
     """batch_size / learning rate for scvi's train(); only when set (scvi keeps its defaults otherwise)."""
-    return {**({"batch_size": p["batch_size"]} if p["batch_size"] else {}), **({"plan_kwargs": {"lr": p["lr"]}} if p["lr"] else {})}
+    # drop_last: a final batch of one cell breaks BatchNorm ("Expected more than 1 value per channel"), as seen at small training fractions
+    return {"datasplitter_kwargs": {"drop_last": True}, **({"batch_size": p["batch_size"]} if p["batch_size"] else {}),
+            **({"plan_kwargs": {"lr": p["lr"]}} if p["lr"] else {})}
 
 
 def _accel(t: Task) -> str:
@@ -72,5 +74,5 @@ def scarches(t: Task) -> Result:
     q = _scvi_adata(t, t.test_idx, None)
     qm = SCANVI.load_query_data(q, rm)
     qm.train(max_epochs=p["query_epochs"], plan_kwargs=dict(weight_decay=0.0),
-             accelerator=_accel(t))
+             accelerator=_accel(t), datasplitter_kwargs={"drop_last": True})
     return Result(np.asarray(qm.predict()).astype(str))

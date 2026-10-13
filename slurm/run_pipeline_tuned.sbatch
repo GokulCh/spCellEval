@@ -24,6 +24,7 @@
 #   TIMEOUT         seconds per method run (default 43200 = 12 h: the longer training of Scyan / Astir / STARLING / MAPS needs it)
 #   JOBS, THREADS, ORDER, SCRIPT_RUNS   as in run_pipeline_gpu.sbatch
 #   TUNE=1, TRIALS (12), TUNE_METHODS, STAGE1_CELLS (20000), TUNE_MAX_CELLS (0 = all)   the tuning step
+#   METHODS         methods of the full run (default all), e.g. METHODS=scyan,astir,starling,maps,tacit,flowsom,leiden to re-run only those
 #   SMOKE=1, SMOKE_METHODS, SMOKE_CELLS (20000)             the quick check
 # Other GPU / time limit: sbatch --partition=gpu-h100 --time=<limit> slurm/run_pipeline_tuned.sbatch
 #SBATCH --job-name=spceleval_tuned
@@ -71,6 +72,7 @@ TUNE_MAX_CELLS=${TUNE_MAX_CELLS:-0}
 TUNE_METHODS=${TUNE_METHODS:-xgboost,random_forest,logistic_regression,svm,louvain,leiden,flowsom,spade,tacit,spatial_gnn}
 SMOKE_METHODS=${SMOKE_METHODS:-xgboost,random_forest,logistic_regression,louvain,leiden,flowsom,tacit,scyan,astir,tribus,starling,maps,stellar}
 SMOKE_CELLS=${SMOKE_CELLS:-20000}
+METHODS=${METHODS:-all}
 PARAMS=${PARAMS:-configs/method_params.json}
 MARKER_MATRIX=${MARKER_MATRIX-data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv}   # unset -> default file; set but empty -> none
 
@@ -114,7 +116,7 @@ fi
 if [ -n "$SMOKE" ]; then
   RUN=(--stages benchmark,visualize --split holdout --methods "$SMOKE_METHODS" --max-cells "$SMOKE_CELLS" --script-runs 1)
 else
-  RUN=(--stages benchmark,visualize --split all --methods all --script-runs "$SCRIPT_RUNS" --repeats "$REPEATS")
+  RUN=(--stages benchmark,visualize --split all --methods "$METHODS" --script-runs "$SCRIPT_RUNS" --repeats "$REPEATS")
 fi
 "$PYTHON" -u cli.py pipeline "${COMMON[@]}" "${RUN[@]}" \
   --timeout "$TIMEOUT" --jobs "$JOBS" --model-threads "$THREADS" --order "$ORDER" \
