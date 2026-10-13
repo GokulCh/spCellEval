@@ -1,3 +1,7 @@
+import os, sys
+# A CPU run must not touch CUDA: Lightning still probes the GPU (get_rng_state_all) and that crashes where CUDA cannot be initialised
+if "--accelerator" in sys.argv and sys.argv[sys.argv.index("--accelerator") + 1] == "cpu":
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import scyan
 import anndata as ad
 import pandas as pd
