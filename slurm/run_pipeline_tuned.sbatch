@@ -61,7 +61,7 @@ JOBS=${JOBS:-$(( CPUS / 2 ))}                     # methods running at the same 
 [ "$JOBS" -lt 1 ] && JOBS=1
 THREADS=${THREADS:-$(( CPUS / 8 ))}               # threads inside the methods that can use them (xgboost, random forest, ...)
 [ "$THREADS" -lt 1 ] && THREADS=1
-TIMEOUT=${TIMEOUT:-43200}
+if [ -n "$SMOKE" ]; then TIMEOUT=${TIMEOUT:-3600}; else TIMEOUT=${TIMEOUT:-43200}; fi   # a smoke test must not hang for hours
 ORDER=${ORDER:-slow-first}                        # starts the slowest methods at once; usually the shortest total time
 SCRIPT_RUNS=${SCRIPT_RUNS:-3}                     # repeats of the repo's script methods (stability needs > 1)
 REPEATS=${REPEATS:-1}
