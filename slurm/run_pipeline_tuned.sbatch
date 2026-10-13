@@ -120,7 +120,13 @@ else
 fi
 "$PYTHON" -u cli.py pipeline "${COMMON[@]}" "${RUN[@]}" \
   --timeout "$TIMEOUT" --jobs "$JOBS" --model-threads "$THREADS" --order "$ORDER" \
-  --out "$OUT"
+  --out "$OUT" || rc=$?
+
+# every finished method is saved on its own, so figures can be rebuilt from a partial or failed run
+if [ "${rc:-0}" -ne 0 ]; then
+  echo "pipeline ended with an error (exit $rc): building the figures and reports from the results saved so far"
+  "$PYTHON" -u cli.py visualize --results "$OUT" || true
+fi
 
 # 4. where to look
 echo

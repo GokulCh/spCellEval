@@ -33,7 +33,9 @@ def describe(fig, title: str = "") -> str:
             body.append("heatmap (rows = y ticks, columns = x ticks)" + (f"; first {r}x{c} of {a.shape[0]}x{a.shape[1]} shown" if (r, c) != a.shape else ""))
             body.append("\t" + "\t".join(xt[:c]))
             body += [yt[i] + "\t" + "\t".join(_f(a[i, j]) for j in range(c)) for i in range(r)]
-        for cont in ax.containers:                                        # bars
+        for cont in ax.containers:                                        # bars (error-bar containers have no patches: their points come from ax.lines)
+            if not hasattr(cont, "patches"):
+                continue
             lab = cont.get_label()
             horiz = getattr(cont, "orientation", None) == "horizontal"
             ticks = _ticks(ax.get_yticklabels() if horiz else ax.get_xticklabels(), len(ax.get_yticks() if horiz else ax.get_xticks()))
