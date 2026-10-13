@@ -113,7 +113,10 @@ def draft_matrix(X, markers, y, top: int = 3, min_z: float = 1.0) -> pd.DataFram
     m = pd.DataFrame(np.nan, index=pd.Index(sorted(z.index), name="Populations"), columns=list(markers))
     for t in m.index:
         best = z.loc[t].sort_values(ascending=False)
-        for mk in best[best >= min_z].index[:top]:
+        keep = best[best >= min_z].index[:top]
+        if len(keep) < 2:       # weakly marker-defined types (z below min_z) would get an empty row and could never be predicted
+            keep = best[best > 0].index[:2]
+        for mk in keep:
             m.loc[t, mk] = 1.0
     return m
 
