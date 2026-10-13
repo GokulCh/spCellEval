@@ -95,7 +95,11 @@ def scaling_score(method: str) -> float:
 @lru_cache(maxsize=1)
 def hierarchy_mappings() -> dict:
     with open(EVAL / "hierarchy_mappings.pkl", "rb") as f:
-        return pickle.load(f)
+        m = pickle.load(f)
+    for p in sorted((SRC.parent / "configs" / "hierarchies").glob("*.json")):      # datasets the pkl lacks (e.g. crc_tma); the pkl wins on a clash
+        for k, v in json.loads(p.read_text(encoding="utf-8")).items():
+            m.setdefault(k, v)
+    return m
 
 
 def to_level(labels, level: str, true_cols: dict | None = None) -> np.ndarray:

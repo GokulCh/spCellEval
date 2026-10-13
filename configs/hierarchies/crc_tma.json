@@ -1,0 +1,19 @@
+{
+  "tumor cells":           {"level_2_cell_type": "tumor cells",      "level_1_cell_type": "tumor"},
+  "macrophages":           {"level_2_cell_type": "myeloid cells",    "level_1_cell_type": "immune"},
+  "granulocytes":          {"level_2_cell_type": "myeloid cells",    "level_1_cell_type": "immune"},
+  "CD11c+ DCs":            {"level_2_cell_type": "myeloid cells",    "level_1_cell_type": "immune"},
+  "CD8+ T cells":          {"level_2_cell_type": "T cells",          "level_1_cell_type": "immune"},
+  "CD4+ T cells":          {"level_2_cell_type": "T cells",          "level_1_cell_type": "immune"},
+  "CD4+ T cells CD45RO+":  {"level_2_cell_type": "T cells",          "level_1_cell_type": "immune"},
+  "Tregs":                 {"level_2_cell_type": "T cells",          "level_1_cell_type": "immune"},
+  "CD3+ T cells":          {"level_2_cell_type": "T cells",          "level_1_cell_type": "immune"},
+  "B cells":               {"level_2_cell_type": "B lineage",        "level_1_cell_type": "immune"},
+  "plasma cells":          {"level_2_cell_type": "B lineage",        "level_1_cell_type": "immune"},
+  "NK cells":              {"level_2_cell_type": "NK cells",         "level_1_cell_type": "immune"},
+  "immune cells":          {"level_2_cell_type": "unspecified immune", "level_1_cell_type": "immune"},
+  "stroma":                {"level_2_cell_type": "stromal cells",    "level_1_cell_type": "stromal"},
+  "smooth muscle":         {"level_2_cell_type": "stromal cells",    "level_1_cell_type": "stromal"},
+  "vasculature":           {"level_2_cell_type": "endothelial cells", "level_1_cell_type": "stromal"},
+  "lymphatics":            {"level_2_cell_type": "endothelial cells", "level_1_cell_type": "stromal"}
+}
