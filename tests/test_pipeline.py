@@ -63,7 +63,8 @@ def full_run(tmp_path_factory):
     assert cli.main(["benchmark", "--data", str(p), "--out", str(out), "--marker-matrix", str(mm),
                      "--methods", f"{CLASSIC},svm,louvain,spade,singler,spatial_gnn,knn_smooth,marker_score,"
                                   "random_forest+vote,cellsighter",
-                     "--split", "all", "--fractions", "0.05,0.5,0.8", "--jobs", "2"]) == 0
+                     "--split", "all", "--fractions", "0.05,0.5,0.8", "--jobs", "2",
+                     "--params", str(out / "none.json")]) == 0
     return out
 
 
@@ -236,7 +237,7 @@ def test_maps_gets_only_markers_and_the_encoded_label(data, tmp_path):
 def test_real_leiden_script_runs_through_adapter(data, tmp_path):
     p, _ = data
     assert cli.main(["benchmark", "--data", str(p), "--out", str(tmp_path), "--split", "cv", "--methods", "leiden",
-                     "--no-plots", "--timeout", "600"]) == 0
+                     "--no-plots", "--timeout", "600", "--params", str(tmp_path / "none.json")]) == 0
     r = pd.read_csv(tmp_path / "benchmark_results.csv")
     assert {"leiden_res0_5", "leiden_res0_8", "leiden_res1_0", "leiden_res2_0"} <= set(r.method)
     assert (r.status == "ok").all() and r.f1_macro.min() > 0.5 and r.split.eq("all").all()
@@ -681,3 +682,12 @@ def test_more_metrics_and_text_outputs(full_run, tmp_path):
     rep = (full_run / "summary" / "AI_REPORT.md").read_text(encoding="utf-8")
     assert "Leaderboard" in rep and "precision_macro_mean" in rep and "Figure index" in rep and "Parameters every method ran with" in rep
     assert (full_run / "summary" / "AI_REPORT_SHORT.md").exists() and list(full_run.rglob("figures/**/*.txt"))
+
+
+def test_shipped_params_file_is_valid_and_resolves_for_every_method():
+    from src.models import params as mp
+    assert mp.check_file() == [] and cli.main(["params", "--check"]) == 0
+    for m in mp.SPACE:                                    # every configured method resolves, and only known parameters are set
+        assert set(mp.resolve("any_dataset", m, explicit=True)) <= set(mp.SPACE[m])
+    assert mp.resolve("any_dataset", "maps")["max_epochs"] > 2 and mp.resolve("any_dataset", "scyan")["preprocess"] is True
+    assert mp.check_file(None) == [] and mp.schema()["properties"]["_notes"]

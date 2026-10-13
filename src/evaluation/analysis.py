@@ -18,7 +18,7 @@ from scipy.stats import spearmanr
 from ..models.spatial import spatial_graph
 from ..preprocessing.data import LEVEL_COLUMN, Dataset
 from .extra_tables import extra_tables
-from .metrics import composition_table, top_confusions
+from .metrics import UNASSIGNED, composition_table, top_confusions
 from .repo_assets import (RUNTIME_THRESH_S, STABILITY_THRESH, category, overall_score, scaling_score, to_level)
 
 RARE = 0.01
@@ -285,7 +285,7 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
         tabs["prevalence_vs_f1"] = pd.DataFrame(cor)
 
     # predictions-based: confusions, composition bias -------------------------------------------------------
-    conf_rows, comp_rows = [], []
+    conf_rows, comp_rows, diag_rows = [], [], []
     for ds, p in prim.items():
         sel = _primary(ok[ok.dataset == ds], {ds: p})
         by_method: dict[str, list] = {}
@@ -299,6 +299,13 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
                 by_method.setdefault(r.method, []).append(d0[[tcol, "predicted_phenotype"]].set_axis(["true_phenotype", "predicted_phenotype"], axis=1))
         for m, parts in by_method.items():
             d = pd.concat(parts, ignore_index=True)
+            pp = d.predicted_phenotype.astype(str)
+            top = pp.value_counts(normalize=True)
+            diag_rows.append(dict(dataset=ds, method=m, n_cells=len(d), n_true_classes=d.true_phenotype.nunique(),
+                                  n_predicted_classes=pp.nunique(), top_predicted_class=top.index[0], top_predicted_share=float(top.iloc[0]),
+                                  unassigned_share=float(pp.str.lower().isin(UNASSIGNED).mean()),
+                                  correct_share=float((pp == d.true_phenotype.astype(str)).mean()),
+                                  prediction_hash=int(pd.util.hash_pandas_object(pp, index=False).sum() % (2**62))))
             cm = pd.crosstab(d.true_phenotype.astype(str), d.predicted_phenotype.astype(str))
             cdir = a / "confusion_matrices" / ds
             cdir.mkdir(parents=True, exist_ok=True)
@@ -312,6 +319,10 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
             c.insert(0, "method", m)
             c.insert(0, "dataset", ds)
             comp_rows.append(c)
+    if diag_rows:
+        dg = pd.DataFrame(diag_rows)
+        dg["identical_to"] = dg.groupby(["dataset", "prediction_hash"]).method.transform(lambda s: ", ".join(s) if len(s) > 1 else "")
+        tabs["prediction_diagnostics"] = dg
     if conf_rows:
         cf = pd.concat(conf_rows)
         tabs["top_confusions_by_method"] = cf

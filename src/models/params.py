@@ -55,7 +55,7 @@ SPACE: dict[str, dict[str, tuple]] = {
     "flowsom": {"n_clusters": (None, _C(10, 15, 20, 30, 40)), "xdim": (10, _C(5, 10, 15)), "ydim": (10, _C(5, 10, 15)),
                 "rlen": (10, _C(10, 30, 100)), "mst": (1, _C(1, 3)), "distf": (2, _C(1, 2))},
     "tacit": {"r": (10, _C(10, 25, 50, 100, 200)), "p": (10, _C(5, 10, 20))},
-    "scyan": {"prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
+    "scyan": {"preprocess": (False, _C(False, True)), "prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
               "scaling": (None, []), "log1p": (False, []),
               "lr": (None, _C(0.00025, 0.0005, 0.001)), "hidden_size": (None, _C(16, 32, 64)), "n_hidden_layers": (None, _C(4, 6, 8)),
               "n_layers": (None, _C(5, 7, 10)), "max_epochs": (None, _C(50, 100, 200)), "min_delta": (None, _C(0.25, 0.5, 1.0)),
@@ -140,6 +140,31 @@ def schema() -> dict:
         return sorted(ts - {"integer"} if "number" in ts else ts)
     sec = {"type": "object", "additionalProperties": False, "properties": {
         m: {"type": "object", "additionalProperties": False,
-            "properties": {k: {"type": types([d, *c])} for k, (d, c) in sp.items()}} for m, sp in SPACE.items()}}
+            "properties": {k: ({"type": types([d, *c])} if (d is not None or c) else {}) for k, (d, c) in sp.items()}} for m, sp in SPACE.items()}}
     return {"$schema": "http://json-schema.org/draft-07/schema#", "title": "spCellEval method parameters",
-            "type": "object", "properties": {"$schema": {"type": "string"}, "_comment": {"type": "string"}, "default": sec}, "additionalProperties": sec}
+            "type": "object", "properties": {"$schema": {"type": "string"}, "_comment": {"type": "string"}, "_notes": {"type": "object"}, "default": sec}, "additionalProperties": sec}
+
+
+def check_file(path=None) -> list[str]:
+    """Problems in a params file: unknown methods / parameters and values of the wrong type (empty list = fine)."""
+    bad = []
+    for ds, block in _read(path).items():
+        if ds.startswith(("_", "$")):
+            continue
+        for m, ps in block.items():
+            sp = SPACE.get(m)
+            if sp is None:
+                bad.append(f"{ds}/{m}: unknown method")
+                continue
+            for k, v in ps.items():
+                if k not in sp:
+                    bad.append(f"{ds}/{m}/{k}: unknown parameter (valid: {', '.join(sp)})")
+                    continue
+                d, c = sp[k]
+                if d is None and not c:
+                    continue                                    # free-form (None = library default, any value allowed)
+                allowed = {_JSON[type(x)] for x in [d, *c]}
+                t = _JSON[type(v)]
+                if not (t in allowed or (t == "integer" and "number" in allowed) or (v is None and None in [d, *c])):
+                    bad.append(f"{ds}/{m}/{k}: {v!r} is {t}, expected {'/'.join(sorted(allowed))}")
+    return bad

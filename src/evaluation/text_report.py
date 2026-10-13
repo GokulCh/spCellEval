@@ -79,6 +79,21 @@ def write_text_report(out: str | Path, max_rows: int = 40) -> Path:
             fl = fl.assign(error=fl.error.astype(str).str.slice(0, 160))
             L += ["Runs that did not complete:\n", _tbl(fl, n=max_rows)]
         short += ["## Run overview\n",f"datasets: {', '.join(sorted(res.dataset.unique()))}; methods: {res.method.nunique()}\n", _tbl(st)]
+    # ----------------------------------------------------------------- sanity checks on the predictions
+    dg = A.get("prediction_diagnostics", pd.DataFrame())
+    if len(dg):
+        warn = []
+        for ds, g in dg.groupby("dataset"):
+            for grp in sorted({s for s in g.identical_to.fillna("") if s}):
+                warn.append(f"- **{ds}**: these methods produced EXACTLY the same predictions: {grp} (a shared input or a bug, not a coincidence)")
+            for r in g.itertuples():
+                if r.n_true_classes > 2 and r.n_predicted_classes <= 2:
+                    warn.append(f"- **{ds}/{r.method}**: predicts only {r.n_predicted_classes} class(es) ({r.top_predicted_class} = {r.top_predicted_share:.0%}) while the truth has {r.n_true_classes}")
+                if r.unassigned_share > 0.5:
+                    warn.append(f"- **{ds}/{r.method}**: {r.unassigned_share:.0%} of the cells are left unassigned (undefined / unknown / others)")
+        L += ["## Sanity checks on the predictions\n", "\n".join(warn) if warn else "No identical, single-class or mostly-unassigned predictions found.", "",
+              _tbl(dg, ["dataset", "method", "n_true_classes", "n_predicted_classes", "top_predicted_class", "top_predicted_share", "unassigned_share", "correct_share"], 80)]
+        short += ["## Sanity checks\n", "\n".join(warn) if warn else "No identical, single-class or mostly-unassigned predictions found.", ""]
     # ----------------------------------------------------------------- parameters
     pu = A.get("params_used", pd.DataFrame())
     if len(pu):

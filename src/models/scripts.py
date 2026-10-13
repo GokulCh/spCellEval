@@ -157,7 +157,7 @@ def _scyan(c: ScriptCtx) -> list[str]:
     return ["--dataset_path", str(c.ws.quant), "--split_col", c.ws.split_col, "--decision_matrix_path",
             str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu",
-            *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p", "lr", "hidden_size", "n_hidden_layers",
+            *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p", "preprocess", "lr", "hidden_size", "n_hidden_layers",
                                                    "n_layers", "max_epochs", "min_delta", "batch_size", "max_samples", "modulo_temp")})]
 
 

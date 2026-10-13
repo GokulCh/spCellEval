@@ -141,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--methods", default="all")
     sp.add_argument("--dataset", help="dataset name (data file name without _quantification): show / --init its settings")
     sp.add_argument("--params", help="params file (default configs/method_params.json)")
+    sp.add_argument("--check", action="store_true", help="validate the params file: unknown methods / parameters, wrong value types")
     sp.add_argument("--schema", action="store_true", help="write configs/method_params.schema.json (add \"$schema\": \"./method_params.schema.json\" to the params file for editor checks)")
     sp.add_argument("--init", action="store_true", help="write the defaults of the chosen methods under --dataset (existing values are kept)")
 
@@ -359,6 +360,12 @@ def run_report(res, out: Path) -> str:
 
 def cmd_params(a) -> None:
     from src.models import params as mp
+    if a.check:
+        bad = mp.check_file(a.params)
+        if bad:
+            raise ValueError("params file problems: " + "; ".join(bad))
+        print(f"{a.params or mp.CONFIG}: OK")
+        return
     if a.schema:
         p = mp.CONFIG.with_name("method_params.schema.json")
         p.write_text(json.dumps(mp.schema(), indent=2) + "\n", encoding="utf-8")

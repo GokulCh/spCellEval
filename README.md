@@ -77,6 +77,8 @@ python cli.py benchmark --data IMMUcan_quantification.csv     # uses the saved v
 
 Seed variability: `benchmark --repeats 5` repeats the whole run with 5 consecutive seeds and writes `summary/seed_variability.csv` (mean/std macro-F1); `summary/comparison_f1_macro.md` is a ready-to-paste methods x datasets table.
 
+The shipped `configs/method_params.json` already holds best-judgement settings for every method (rationale per method under `_notes`). They are not tuned on your data: validate the file with `python cli.py params --check`, run `benchmark`, and refine with `tune`. Each run's report starts with a sanity-check section that flags methods with identical predictions, single-class predictions or mostly unassigned cells.
+
 #### Results as text and as figures
 
 Every benchmark run writes both. Nothing needs the images to be understood:
