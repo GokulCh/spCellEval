@@ -40,7 +40,7 @@ def svm(t: Task) -> Result:
     elif len(y) > p["max_rbf_cells"]:              # SVC is O(n^2); the approximation keeps the RBF decision surface at linear cost
         var = 1.0 if p["scale"] else float(t.X_train.var())          # standardised markers have unit variance
         g = p["gamma"] if isinstance(p["gamma"], (int, float)) else 1.0 / (n_feat * (var if p["gamma"] == "scale" else 1.0))   # sklearn's scale / auto
-        clf = make_pipeline(Nystroem(gamma=g, n_components=min(500, len(y)), random_state=t.seed), LinearSVC(**lin))
+        clf = make_pipeline(Nystroem(gamma=g, n_components=min(p["n_components"], len(y)), random_state=t.seed), LinearSVC(**lin))
     else:
         clf = SVC(C=p["C"], kernel=p["kernel"], gamma=p["gamma"], class_weight=p["class_weight"], random_state=t.seed)
     m = make_pipeline(StandardScaler(), clf) if p["scale"] else make_pipeline(clf)

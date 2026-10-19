@@ -357,7 +357,8 @@ def analyze_results(out: str | Path) -> dict[str, pd.DataFrame]:
         for ds, g5 in f3.groupby("dataset"):
             sc_ = g5.set_index("method").overall_performance
             pairs = [(m, m.removesuffix("+vote")) for m in sc_.index if m.endswith("+vote")]
-            pairs += [("spatial_gnn", "logistic_regression"), ("knn_smooth", "random_forest")]
+            # the reference must be the same kind of model without neighbourhood features: spatial_gnn is gradient boosting (not logistic regression), knn_smooth is a random forest
+            pairs += [("spatial_gnn", "xgboost"), ("knn_smooth", "random_forest")]
             for m, b in pairs:
                 if m in sc_.index and b in sc_.index:
                     sg.append(dict(dataset=ds, spatial_method=m, non_spatial_reference=b,

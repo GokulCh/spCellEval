@@ -25,7 +25,7 @@ _C = lambda *v: list(v)
 SPACE: dict[str, dict[str, tuple]] = {
     # ---- native (src/models)
     "svm": {"C": (1.0, _C(0.1, 1.0, 10.0, 100.0, 1000.0)), "kernel": ("rbf", _C("rbf", "linear")), "gamma": ("scale", _C("scale", "auto")),
-            "class_weight": ("balanced", _C("balanced", None)), "max_rbf_cells": (20000, []), "scale": (True, _C(True, False))},
+            "class_weight": ("balanced", _C("balanced", None)), "max_rbf_cells": (20000, []), "n_components": (500, _C(500, 1000, 2000)), "scale": (True, _C(True, False))},
     "louvain": {"resolution": (1.0, _C(0.5, 1.0, 2.0, 4.0, 8.0)), "k_neighbors": (None, _C(5, 10, 15, 30))},
     "spade": {"n_clusters": (None, _C(30, 50, 80, 120)), "linkage": ("ward", _C("ward", "average", "complete")), "max_cells": (5000, _C(2000, 5000, 10000))},
     "singler": {"n_top": (500, _C(20, 40, 100, 500)), "zscore": (False, _C(False, True))},
