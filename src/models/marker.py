@@ -70,6 +70,32 @@ def align(matrix: pd.DataFrame, markers: list[str]) -> tuple[list[str], np.ndarr
     return list(matrix.index[keep]), M[keep]
 
 
+def is_nested(M: np.ndarray) -> bool:
+    """True when some type's defining markers are a strict subset of another's (e.g. 'immune cells' = CD45 and 'CD8 T cells' =
+    CD45 + CD3 + CD8): a gating hierarchy, where the most specific matching type should win over its parent."""
+    P = M > 0
+    for i in range(len(P)):
+        sub = (P[i] <= P).all(1) & (P.sum(1) > P[i].sum()) & (P[i].sum() > 0)
+        if sub.any():
+            return True
+    return False
+
+
+def specific_scores(X: np.ndarray, M: np.ndarray, thr: float = 0.0) -> np.ndarray:
+    """Cells x types scores for nested signatures. A type is *satisfied* when every one of its defining markers is above `thr`
+    (signed z: negative markers must be below -thr). Among satisfied types the one with the most markers wins (the most
+    specific gate); a cell that satisfies none falls back to the mean-z score, shifted below every satisfied type."""
+    Z = (X - X.mean(0)) / np.where(X.std(0) == 0, 1, X.std(0))
+    mean = Z @ M.T / np.maximum(np.abs(M).sum(1), 1)
+    S = np.full(mean.shape, np.inf)
+    for t in range(M.shape[0]):
+        used = M[t] != 0
+        S[:, t] = (Z[:, used] * M[t, used]).min(1) if used.any() else -np.inf
+    ok = S > thr
+    n_used = (M != 0).sum(1)
+    return np.where(ok, 1e3 + n_used[None, :] + mean, mean)       # satisfied: ranked by specificity, then by mean z
+
+
 def marker_scores(X: np.ndarray, M: np.ndarray) -> np.ndarray:
     """Cells x types: mean z-score of positive markers minus that of negative markers."""
     Z = (X - X.mean(0)) / np.where(X.std(0) == 0, 1, X.std(0))
@@ -91,14 +117,18 @@ def pseudo_labels(X, markers, matrix, min_score: float = 0.5, min_margin: float 
 def marker_score(t: Task) -> Result:
     """Plain marker-score annotation (argmax of signed marker z-scores; 'Unknown' if no type scores above min_score, default 0).
 
+    mode 'auto' uses gating (the most specific type whose markers are all above average) when the matrix is nested, else the mean z-score.
+
     Lightweight stand-in that needs no R/torch; it is NOT TACIT (run ``tacit`` for the real R implementation).
     """
     if t.marker_matrix is None:
         raise MethodUnavailable("needs a marker decision matrix (--marker-matrix or a bundled <dataset> matrix)")
+    p = of("marker_score", t.params)
     types, M = align(t.marker_matrix, t.markers)
-    S = marker_scores(t.X_test, M)
+    mode = p["mode"] if p["mode"] != "auto" else ("specific" if is_nested(M) else "mean")
+    S = specific_scores(t.X_test, M) if mode == "specific" else marker_scores(t.X_test, M)
     lab = np.array(types, dtype=object)[S.argmax(1)]
-    return Result(np.where(S.max(1) > of("marker_score", t.params)["min_score"], lab, "Unknown").astype(str))
+    return Result(np.where(S.max(1) > p["min_score"], lab, "Unknown").astype(str))
 
 
 PRIOR_METHODS = {"tacit", "scyan", "astir", "marker_score"}      # the methods that need a marker decision matrix

@@ -154,3 +154,31 @@ Trophoblast
     EVT1b
     EVT2
     EVT1c
+Immune
+  myeloid cells
+    macrophages
+    granulocytes
+    CD11c+ DCs
+  T cells
+    CD8+ T cells
+    CD4+ T cells
+    CD4+ T cells CD45RO+
+    Tregs
+    CD3+ T cells
+  B lineage
+    B cells
+    plasma cells
+  NK cells
+    NK cells
+  unspecified immune
+    immune cells
+Stromal
+  stromal cells
+    stroma
+    smooth muscle
+  endothelial cells
+    vasculature
+    lymphatics
+Tumor
+  tumor cells
+    tumor cells

@@ -74,7 +74,7 @@ SMOKE_METHODS=${SMOKE_METHODS:-xgboost,random_forest,logistic_regression,louvain
 SMOKE_CELLS=${SMOKE_CELLS:-20000}
 METHODS=${METHODS:-all}
 PARAMS=${PARAMS:-configs/method_params.json}
-MARKER_MATRIX=${MARKER_MATRIX-data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv}   # unset -> default file; set but empty -> none
+MARKER_MATRIX=${MARKER_MATRIX-src/methods/TACIT/crc_tma_decision_matrix_level3.csv}   # unset -> default file; set but empty -> none
 
 [ -f "$DATA" ] || { echo "data not found: $DATA"; exit 1; }
 [ -f "$PARAMS" ] || { echo "params file not found: $PARAMS"; exit 1; }

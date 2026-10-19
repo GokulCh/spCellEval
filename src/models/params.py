@@ -13,7 +13,6 @@ List all of it with ``python cli.py params``.
 """
 from __future__ import annotations
 
-import itertools
 import json
 import random
 from pathlib import Path
@@ -25,37 +24,38 @@ _C = lambda *v: list(v)
 
 SPACE: dict[str, dict[str, tuple]] = {
     # ---- native (src/models)
-    "svm": {"C": (1.0, _C(0.1, 1.0, 10.0, 100.0)), "kernel": ("rbf", _C("rbf", "linear")), "gamma": ("scale", _C("scale", "auto")),
+    "svm": {"C": (1.0, _C(0.1, 1.0, 10.0, 100.0, 1000.0)), "kernel": ("rbf", _C("rbf", "linear")), "gamma": ("scale", _C("scale", "auto")),
             "class_weight": ("balanced", _C("balanced", None)), "max_rbf_cells": (20000, []), "scale": (True, _C(True, False))},
-    "louvain": {"resolution": (1.0, _C(0.5, 0.8, 1.0, 1.5, 2.0)), "k_neighbors": (None, _C(5, 10, 15, 30))},
-    "spade": {"n_clusters": (None, _C(10, 20, 30, 50)), "linkage": ("ward", _C("ward", "average", "complete")), "max_cells": (5000, _C(2000, 5000, 10000))},
-    "singler": {"n_top": (500, _C(100, 250, 500, 1000))},
+    "louvain": {"resolution": (1.0, _C(0.5, 1.0, 2.0, 4.0, 8.0)), "k_neighbors": (None, _C(5, 10, 15, 30))},
+    "spade": {"n_clusters": (None, _C(30, 50, 80, 120)), "linkage": ("ward", _C("ward", "average", "complete")), "max_cells": (5000, _C(2000, 5000, 10000))},
+    "singler": {"n_top": (500, _C(20, 40, 100, 500)), "zscore": (True, _C(True, False))},
     "scanvi": {"epochs": (50, _C(25, 50, 100)), "n_latent": (10, _C(5, 10, 30)), "n_hidden": (128, _C(64, 128, 256)),
                "n_layers": (1, _C(1, 2)), "batch_size": (128, _C(64, 128, 256)), "lr": (None, _C(0.0005, 0.001, 0.002))},
     "scarches": {"epochs": (50, _C(25, 50, 100)), "query_epochs": (20, _C(10, 20, 50)), "n_latent": (10, _C(5, 10, 30)), "n_hidden": (128, _C(64, 128, 256)),
                  "n_layers": (1, _C(1, 2)), "batch_size": (128, _C(64, 128, 256)), "lr": (None, _C(0.0005, 0.001, 0.002))},
-    "spatial_gnn": {"k_neighbors": (None, _C(5, 10, 15, 30)), "hops": (2, _C(1, 2, 3)), "C": (1.0, _C(0.1, 1.0, 10.0)), "max_iter": (300, [])},
-    "knn_smooth": {"k_neighbors": (None, _C(5, 10, 15, 30)), "alpha": (0.5, _C(0.25, 0.5, 0.75)), "n_estimators": (200, _C(100, 200, 400)),
+    "spatial_gnn": {"k_neighbors": (None, _C(5, 10, 15, 30)), "hops": (2, _C(1, 2, 3)), "C": (1.0, _C(0.1, 1.0, 10.0)), "max_iter": (300, _C(100, 300)),
+                    "model": ("logreg", _C("logreg", "hgb"))},
+    "knn_smooth": {"k_neighbors": (None, _C(5, 10, 15, 30)), "alpha": (0.5, _C(0.25, 0.5, 0.75)), "concat": (True, _C(True, False)), "n_estimators": (200, _C(100, 200, 400)),
                    "max_depth": (None, _C(None, 20, 40))},
-    "marker_score": {"min_score": (0.0, _C(0.0, 0.25, 0.5))},
+    "marker_score": {"min_score": (0.0, _C(0.0, 0.25, 0.5)), "mode": ("auto", _C("auto", "mean", "specific"))},
     # ---- the repo's classic-ML script (forwarded as --model_kwargs)
-    "logistic_regression": {"C": (1.0, _C(0.001, 0.01, 0.1, 1.0, 10.0, 100.0)), "max_iter": (100, _C(100, 300)), "class_weight": ("balanced", _C("balanced", None)),
+    "logistic_regression": {"C": (1.0, _C(0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)), "max_iter": (100, _C(100, 300, 1000, 2000)), "class_weight": ("balanced", _C("balanced", None)),
                             "scaling": ("Yes", _C("Yes", "No"))},
-    "random_forest": {"n_estimators": (100, _C(100, 250, 500)), "max_depth": (None, _C(None, 20, 40)), "min_samples_split": (2, _C(2, 5, 7)),
+    "random_forest": {"criterion": ("log_loss", _C("log_loss", "gini")), "n_estimators": (100, _C(100, 250, 500, 1000)), "max_depth": (None, _C(None, 20, 40)), "min_samples_split": (2, _C(2, 5, 7)),
                       "min_samples_leaf": (1, _C(1, 2, 4)), "max_features": ("sqrt", _C("sqrt", "log2", 0.5)), "class_weight": ("balanced", _C("balanced", None)),
                       "scaling": ("Yes", _C("Yes", "No"))},
-    "xgboost": {"n_estimators": (100, _C(100, 250, 500)), "max_depth": (6, _C(4, 6, 8, 10)), "learning_rate": (0.3, _C(0.03, 0.1, 0.3)),
+    "xgboost": {"n_estimators": (100, _C(100, 250, 500, 1000)), "max_depth": (6, _C(4, 6, 8, 10)), "learning_rate": (0.3, _C(0.03, 0.1, 0.3)),
                 "min_child_weight": (1, _C(1, 3)), "subsample": (1.0, _C(0.7, 1.0)), "colsample_bytree": (1.0, _C(0.7, 1.0)),
                 "reg_lambda": (1.0, _C(0.5, 1.0, 5.0)), "gamma": (0.0, _C(0.0, 1.0)), "early_stopping_rounds": (10, _C(10, 20)),
                 "scaling": ("Yes", _C("Yes", "No"))},
     "most_frequent": {}, "stratified": {},
     # ---- repo scripts (each value is the script's own CLI option)
-    "leiden": {"resolutions": ([0.5, 0.8, 1.0, 2.0], _C([0.3], [0.5], [0.8], [1.0], [1.5], [2.0])), "n_neighbors": (10, _C(5, 10, 15, 30)),
+    "leiden": {"resolutions": ([0.5, 0.8, 1.0, 2.0], _C([1.0], [2.0], [5.0], [10.0], [20.0], [1.0, 2.0, 5.0, 10.0, 20.0], [0.5, 1.0, 2.0, 3.0, 5.0])), "n_neighbors": (10, _C(5, 10, 15, 30)),
                "pca": (False, _C(False, True)), "n_pcs": (30, _C(10, 20, 30, 50)), "normalization": (False, _C(False, True))},
-    "flowsom": {"n_clusters": (None, _C(10, 15, 20, 30, 40)), "xdim": (10, _C(5, 10, 15)), "ydim": (10, _C(5, 10, 15)),
+    "flowsom": {"n_clusters": (None, _C(20, 40, 60, 100)), "xdim": (10, _C(10, 15, 20, 30)), "ydim": (10, _C(10, 15, 20, 30)),
                 "rlen": (10, _C(10, 30, 100)), "mst": (1, _C(1, 3)), "distf": (2, _C(1, 2))},
     "tacit": {"r": (10, _C(10, 25, 50, 100, 200)), "p": (10, _C(5, 10, 20))},
-    "scyan": {"preprocess": (False, _C(False, True)), "zeros_as_nan": (False, _C(False, True)), "prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
+    "scyan": {"log_prior_threshold": (None, _C(-50.0, -200.0, -1000000.0)), "preprocess": (False, _C(False, True)), "zeros_as_nan": (False, _C(False, True)), "prior_std": (0.3, _C(0.1, 0.3, 0.5, 1.0)), "patience": (10, _C(5, 10, 20)), "temperature": (0.5, _C(0.25, 0.5, 1.0)),
               "scaling": (None, []), "log1p": (False, []),
               "lr": (None, _C(0.00025, 0.0005, 0.001)), "hidden_size": (None, _C(16, 32, 64)), "n_hidden_layers": (None, _C(4, 6, 8)),
               "n_layers": (None, _C(5, 7, 10)), "max_epochs": (None, _C(50, 100, 200)), "min_delta": (None, _C(0.25, 0.5, 1.0)),
@@ -67,7 +67,7 @@ SPACE: dict[str, dict[str, tuple]] = {
                "undefined_threshold": (0.0005, []), "other_threshold": (0.4, _C(0.2, 0.4, 0.6)), "depth": (3, []),
                "scaling": (None, []), "log1p": (False, []), "normalization": (None, []), "tuning": (None, []),
                "outlier_quantile": (0.999, _C(0.99, 0.999, 1.0))},
-    "starling": {"k_cluster": (None, _C(10, 20, 30, 50)), "initial_clustering": ("KM", _C("KM", "GMM")), "dist_option": ("T", _C("T", "N")),
+    "starling": {"k_cluster": (None, _C(30, 60, 100)), "initial_clustering": ("KM", _C("KM", "GMM")), "dist_option": ("T", _C("T", "N")),
                  "singlet_prop": (0.6, _C(0.4, 0.6, 0.8)), "model_regularizer": (1, _C(0, 1, 5)), "lr": (0.001, _C(0.0005, 0.001, 0.005)),
                  "transform": (None, []), "scaling": (None, []), "model_cell_size": (None, []),
                  "max_epochs": (None, _C(50, 100, 200)), "patience": (None, _C(3, 10, 30)), "min_delta": (None, []),
@@ -115,14 +115,27 @@ def save(dataset: str, method: str, values: dict, path=None) -> None:
 
 
 def trials(method: str, n: int, seed: int = 0, start: dict | None = None) -> list[dict]:
-    """Up to ``n`` parameter sets from the method's candidate grid. The first is always ``start`` (the current setting), the
-    rest the full grid if it fits, else a random sample of it."""
+    """Up to ``n`` distinct parameter sets from the method's candidate grid. The first is always ``start`` (the current setting);
+    the rest are drawn at random without building the full grid (Scyan's has ~10^6 combinations)."""
     grid = {k: v[1] for k, v in SPACE.get(method, {}).items() if v[1]}
+    if not grid:
+        return []
     first = {k: (start or {}).get(k, SPACE[method][k][0]) for k in grid}
-    combos = [dict(zip(grid, c)) for c in itertools.product(*grid.values())] if grid else []
-    combos = [c for c in combos if c != first]
-    random.Random(seed).shuffle(combos)
-    return ([first] + combos[:max(n - 1, 0)]) if grid else []
+    rng, seen, out = random.Random(seed), {json.dumps(first, sort_keys=True)}, [first]
+    for _ in range(50 * n):                       # ponytail: random draws, fewer than n if the grid is smaller; add Sobol/TPE if needed
+        if len(out) >= n:
+            break
+        c = {k: rng.choice(v) for k, v in grid.items()}
+        key = json.dumps(c, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def alternatives(method: str, current: dict) -> list[tuple[str, list]]:
+    """[(parameter, other candidate values)] for one-at-a-time refinement around current."""
+    return [(k, [x for x in v[1] if x != current.get(k, v[0])]) for k, v in SPACE.get(method, {}).items() if v[1]]
 
 
 def of(method: str, given: dict) -> dict:

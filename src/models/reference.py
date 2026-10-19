@@ -17,11 +17,15 @@ def singler(t: Task) -> Result:
     iterative fine-tuning step of the R package is not included.
     """
     y = _need_labels(t)
-    n_top = of("singler", t.params)["n_top"]
+    p = of("singler", t.params)
     types = np.unique(y)
-    ref = np.stack([t.X_train[y == c].mean(0) for c in types])
-    top = np.argsort(ref.var(0))[::-1][:min(n_top, ref.shape[1])]
-    R, Q = rankdata(ref[:, top], axis=1), rankdata(t.X_test[:, top], axis=1)
+    Xtr, Xte = t.X_train, t.X_test
+    if p["zscore"]:      # rank-correlating raw cells with raw profiles only measures which markers are generally bright; z-score each marker first
+        mu, sd = Xtr.mean(0), np.where(Xtr.std(0) == 0, 1, Xtr.std(0))
+        Xtr, Xte = (Xtr - mu) / sd, (Xte - mu) / sd
+    ref = np.stack([Xtr[y == c].mean(0) for c in types])
+    top = np.argsort(ref.var(0))[::-1][:min(p["n_top"], ref.shape[1])]
+    R, Q = rankdata(ref[:, top], axis=1), rankdata(Xte[:, top], axis=1)
     R, Q = R - R.mean(1, keepdims=True), Q - Q.mean(1, keepdims=True)
     corr = (Q @ R.T) / (np.linalg.norm(Q, axis=1, keepdims=True) * np.linalg.norm(R, axis=1) + 1e-12)
     return Result(types[corr.argmax(1)])

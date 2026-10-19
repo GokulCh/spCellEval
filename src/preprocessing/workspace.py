@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +34,8 @@ from ..repo import UTILS, load_module
 from .data import LEVEL_COLUMN, Dataset
 
 LEVELS = ["level3", "level2", "level1"]
+log = logging.getLogger("spcelleval")
+_FOLD_LOCK = threading.RLock()           # parallel tuning trials share one folds store: the first creates, the rest reuse
 
 
 @dataclass
@@ -170,26 +175,25 @@ def _legacy_mismatch(src: Workspace, ds: Dataset, labels, rows, level: str, n_sp
 def _try_reuse(ws: Workspace, st: Workspace, fp: dict, ds: Dataset, labels, rows, level, n_splits) -> bool:
     """Link matching folds from the store into the workspace. Prints why not when it cannot."""
     if not (st.kdir.exists() and st.labels.exists()):
-        print(f"{ds.name}: no folds in {st.proc} yet; creating them")
+        log.info("%s: no folds in %s yet; creating them", ds.name, st.proc)
         return False
     if st.fingerprint_file.exists():
         old = json.loads(st.fingerprint_file.read_text())
         diff = [k for k in fp if old.get(k) != fp[k]]
         if diff:
-            print(f"{ds.name}: folds in {st.proc} do not match this run ({', '.join(diff)} differ); "
-                  "creating new folds and replacing them")
+            log.warning("%s: folds in %s do not match this run (%s differ); creating new folds and replacing them", ds.name, st.proc, ", ".join(diff))
             return False
         how = "data, labels and settings match"
     else:
         why = _legacy_mismatch(st, ds, labels, rows, level, n_splits)
         if why is not None:
-            print(f"{ds.name}: older folds in {st.proc} cannot be reused ({why}); creating new folds and replacing them")
+            log.warning("%s: older folds in %s cannot be reused (%s); creating new folds and replacing them", ds.name, st.proc, why)
             return False
         how = f"older folds: table, labels and {n_splits} folds verified; the seed they were made with cannot be checked"
     _link_tree(st.kdir, ws.kdir)
     _link(st.labels, ws.labels)
     ws.reused = True
-    print(f"{ds.name}: reusing the folds already created in {st.proc} ({how})")
+    log.info("%s: reusing the folds already created in %s (%s)", ds.name, st.proc, how)
     return True
 
 
@@ -205,14 +209,15 @@ def _publish(ws: Workspace, st: Workspace) -> None:
     _link_tree(st.kdir, ws.kdir)
     _link(st.labels, ws.labels)
     _link(st.fingerprint_file, ws.fingerprint_file)
-    print(f"{ws.name}: folds saved in {st.kdir} (labels: {st.labels.name})")
+    log.info("%s: folds saved in %s (labels: %s)", ws.name, st.kdir, st.labels.name)
 
 
 # ----------------------------------------------------------------------------- workspace
 def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, level: str = "level3",
                     kfold_method: str = "StratifiedKFold", seed: int = 0, n_splits: int = 5,
                     val_pct: float = 0.15, rows: np.ndarray | None = None, make_folds: bool = True,
-                    extra: dict[str, np.ndarray] | None = None, store: str | Path | None = None) -> Workspace:
+                    extra: dict[str, np.ndarray] | None = None, store: str | Path | None = None,
+                    validation_split_as_test: bool = False) -> Workspace:
     """Write the quantification table (+ folds via the repo's ``run_fold_creation``).
 
     labels: label at ``level`` for every cell (true labels, or marker pseudo-labels in unsupervised mode).
@@ -248,12 +253,23 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
     if not ws.has_folds:
         return ws
 
+    with _FOLD_LOCK:
+        _folds(ws, ds, df, labels, rows, level, kfold_method, seed, n_splits, val_pct, store)
+        if validation_split_as_test:          # inside the lock: a parallel trial must never see the real test split
+            validation_as_test(ws)
+    return ws
+
+
+def _folds(ws, ds, df, labels, rows, level, kfold_method, seed, n_splits, val_pct, store) -> None:
+    """Reuse matching folds from the store, else create them with the repo code (and publish them to the store)."""
+    t0 = time.perf_counter()
     fp = fingerprint(ds, labels, rows, level, kfold_method, seed, n_splits, val_pct)
     st = None
     if store is not None and Path(store).resolve() != ws.proc.resolve():
         st = FlatStore(ws.root, ds.name, level, kfold_method, list(ds.markers), len(rows), True, flat=Path(store).resolve())
         if _try_reuse(ws, st, fp, ds, labels, rows, level, n_splits):
-            return ws
+            log.info("%s: folds ready in %.1fs (reused)", ws.name, time.perf_counter() - t0)
+            return
     run_fold_creation = load_module(UTILS / "run_kfold_creator.py", "run_kfold_creator").run_fold_creation
     run_fold_creation(str(ws.root), ws.name, dropna=False, impute_value=None,
                       phenotype_column=LEVEL_COLUMN[level],
@@ -262,19 +278,22 @@ def build_workspace(ds: Dataset, labels: np.ndarray | None, root: str | Path, le
                       group_shuffle_split_size=0.5, swap_train_test=False, random_state=seed,
                       percentage_validation=val_pct)
     ws.fingerprint_file.write_text(json.dumps(fp))
+    log.info("%s: %d folds created in %.1fs (%s, seed %s, %.0f%% of each train fold held out as validation)", ws.name, n_splits,
+             time.perf_counter() - t0, kfold_method, seed, 100 * val_pct)
     if st is not None:
         try:
             _publish(ws, st)
         except OSError as e:                      # e.g. read-only data folder: keep the folds in the workspace instead
-            print(f"{ws.name}: could not save the folds in {st.proc} ({e}); they stay in {ws.kdir}")
-    return ws
+            log.warning("%s: could not save the folds in %s (%s); they stay in %s", ws.name, st.proc, e, ws.kdir)
 
 
 def validation_as_test(ws: Workspace) -> None:
     """Tuning: overwrite each fold's test file with its validation file (train and validation are disjoint, so a method
     tuned on this never sees the real test split). Only for a private workspace, never for folds shared through a store."""
     for v in ws.kdir.glob("fold_*_validation.csv"):
-        shutil.copy(v, v.with_name(v.name.replace("validation", "test")))
+        t = v.with_name(v.name.replace("validation", "test"))
+        if not t.exists() or t.stat().st_size != v.stat().st_size or t.read_bytes() != v.read_bytes():       # already swapped (shared tuning store): leave it
+            shutil.copy(v, t)
 
 
 def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray | None = None,
@@ -288,14 +307,14 @@ def make_variant(ws: Workspace, name: str, fold: int = 0, train_rows: np.ndarray
     vroot = base / name / "datasets" / ws.name               # short names: Windows MAX_PATH
     kd = vroot / "quantification" / "processed" / ws.kdir.name
     kd.mkdir(parents=True, exist_ok=True)
-    shutil.copy(ws.labels, kd.parent / ws.labels.name)
+    _link(ws.labels, kd.parent / ws.labels.name)
     for part in ("train", "validation", "test"):
         src = ws.kdir / f"fold_{fold + 1}_{part}.csv"
         if part == "train" and train_rows is not None:
             t = pd.read_csv(src)
             t[t.spc_row.isin(train_rows)].to_csv(kd / "fold_1_train.csv", index=False)
         else:
-            shutil.copy(src, kd / f"fold_1_{part}.csv")
+            _link(src, kd / f"fold_1_{part}.csv")          # read-only use by the repo script: no copy
     return vroot.parent.parent                 # the variant root, usable as --main_dir
 
 

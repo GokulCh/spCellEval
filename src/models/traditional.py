@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.kernel_approximation import Nystroem
 from sklearn.metrics import pairwise_distances_argmin
 from sklearn.neighbors import kneighbors_graph
 from sklearn.pipeline import make_pipeline
@@ -30,14 +31,21 @@ def _coef_importance(model, n_feat: int):
 
 @register("svm", 1, "supervised", ("sklearn",))
 def svm(t: Task) -> Result:
-    """SVM (RBF by default) up to max_rbf_cells training cells, LinearSVC beyond (SVC is O(n^2))."""
+    """SVM: exact RBF up to max_rbf_cells training cells; beyond that an RBF kernel approximation (Nystroem) + LinearSVC."""
     y, p = _need_labels(t), of("svm", t.params)
-    big = len(y) > p["max_rbf_cells"] or p["kernel"] == "linear"
-    clf = LinearSVC(C=p["C"], class_weight=p["class_weight"], random_state=t.seed) if big else \
-        SVC(C=p["C"], kernel=p["kernel"], gamma=p["gamma"], class_weight=p["class_weight"], random_state=t.seed)
+    n_feat = t.X.shape[1]
+    lin = dict(C=p["C"], class_weight=p["class_weight"], dual=False, max_iter=2000, random_state=t.seed)   # dual=False: n_samples >> n_features
+    if p["kernel"] == "linear":
+        clf = LinearSVC(**lin)
+    elif len(y) > p["max_rbf_cells"]:              # SVC is O(n^2); the approximation keeps the RBF decision surface at linear cost
+        var = 1.0 if p["scale"] else float(t.X_train.var())          # standardised markers have unit variance
+        g = p["gamma"] if isinstance(p["gamma"], (int, float)) else 1.0 / (n_feat * (var if p["gamma"] == "scale" else 1.0))   # sklearn's scale / auto
+        clf = make_pipeline(Nystroem(gamma=g, n_components=min(500, len(y)), random_state=t.seed), LinearSVC(**lin))
+    else:
+        clf = SVC(C=p["C"], kernel=p["kernel"], gamma=p["gamma"], class_weight=p["class_weight"], random_state=t.seed)
     m = make_pipeline(StandardScaler(), clf) if p["scale"] else make_pipeline(clf)
     m.fit(t.X_train, y)
-    return Result(m.predict(t.X_test), _coef_importance(clf, t.X.shape[1]) if big else None)
+    return Result(m.predict(t.X_test), _coef_importance(clf, n_feat) if isinstance(clf, LinearSVC) else None)
 
 
 def _k(t: Task) -> int:
@@ -48,16 +56,32 @@ def _cid(a) -> np.ndarray:
     return np.array([f"c{i}" for i in a])
 
 
-@register("louvain", 1, "cluster", ("networkx",))
+def _louvain_labels(A, resolution: float, seed: int) -> np.ndarray:
+    """Louvain communities of a sparse graph: igraph's C implementation when installed (leidenalg needs it, so usually),
+    else networkx's pure-Python one (much slower on 10^5+ cells)."""
+    try:
+        import igraph as ig
+    except ImportError:
+        import networkx as nx
+        comm = nx.community.louvain_communities(nx.from_scipy_sparse_array(A), resolution=resolution, seed=seed)
+        lab = np.zeros(A.shape[0], int)
+        for i, c in enumerate(comm):
+            lab[list(c)] = i
+        return lab
+    import random
+    random.seed(seed)
+    ig.set_random_number_generator(random)
+    U = A.maximum(A.T).tocoo()                      # symmetric, each edge once
+    keep = U.row < U.col
+    g = ig.Graph(n=A.shape[0], edges=list(zip(U.row[keep].tolist(), U.col[keep].tolist())))
+    return np.asarray(g.community_multilevel(resolution=resolution).membership)
+
+
+@register("louvain", 1, "cluster", ("sklearn",))
 def louvain(t: Task) -> Result:
-    """Louvain communities on a kNN graph (networkx)."""
-    import networkx as nx
-    g = nx.from_scipy_sparse_array(kneighbors_graph(t.X_test, t.k_neighbors, include_self=False))
-    comm = nx.community.louvain_communities(g, resolution=of("louvain", t.params)["resolution"], seed=t.seed)
-    lab = np.zeros(len(t.X_test), int)
-    for i, c in enumerate(comm):
-        lab[list(c)] = i
-    return Result(_cid(lab))
+    """Louvain communities on a kNN graph (igraph if available, else networkx)."""
+    A = kneighbors_graph(t.X_test, t.k_neighbors, include_self=False, n_jobs=t.n_jobs)
+    return Result(_cid(_louvain_labels(A, of("louvain", t.params)["resolution"], t.seed)))
 
 
 @register("spade", 1, "cluster", ("sklearn",))

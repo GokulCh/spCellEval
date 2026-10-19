@@ -85,15 +85,20 @@ def leiden_with_greedy(adata, df, iterations, output_path, log, resolutions):
     for iteration in range(1, iterations+1):
         for res in resolutions:
             start = time.time()
-            sc.tl.leiden(adata, resolution=res, key_added=f'leiden_res{res}')
+            # a different seed per iteration (iteration 1 keeps scanpy's default 0), otherwise every repeat is identical and stability is meaningless
+            kw = dict(resolution=res, key_added=f'leiden_res{res}', random_state=iteration - 1)
+            try:   # the igraph backend is several times faster than leidenalg and is what scanpy recommends
+                sc.tl.leiden(adata, flavor='igraph', n_iterations=2, directed=False, **kw)
+            except (TypeError, ImportError, ValueError):
+                sc.tl.leiden(adata, **kw)
             elapsed = time.time() - start
+            print(f'Iteration {iteration}: Leiden resolution={res} -> {adata.obs[f"leiden_res{res}"].nunique()} clusters in {elapsed:.1f}s', flush=True)
             if log == 'long':
                 logging.info(f'Iteration {iteration}: Leiden clustering with resolution={res} took {elapsed/60:.2f} minutes')
             if log == 'short':
                 logging.info(f'Resolution={res}: {elapsed/60:.2f} min')
-            output = df.copy()
-            output[f'leiden_res{str(res).replace(".", "_")}'] = adata.obs[f'leiden_res{res}'].values
             resolution = f'leiden_res{str(res).replace(".", "_")}'
+            output = df.assign(**{resolution: adata.obs[f'leiden_res{res}'].values})
             #append time to the results
             text_path = os.path.join(output_path, resolution, 'fold_times.txt')
             os.makedirs(os.path.dirname(text_path), exist_ok=True)
@@ -103,15 +108,17 @@ def leiden_with_greedy(adata, df, iterations, output_path, log, resolutions):
 
             for k in granularity:
                 ## greedy assignement
+                if k not in output.columns:
+                    continue
                 results = greedy_f1_score(output, k, resolution, tie_strategy='random')
-                output['predicted_phenotype'] = results['mapped_predictions']
-                output = output.rename(columns={k: "true_phenotype"})
+                # a fresh frame per level: renaming the label column in place gave later levels two 'true_phenotype' columns (the level-3 truth first)
+                lv_out = output.assign(predicted_phenotype=results['mapped_predictions']).rename(columns={k: "true_phenotype"})
                 name = granularity[granularity==k].index[0]
                 path = f"{output_path}/{resolution}/{name}/predictions_{iteration}.csv"
                 os.makedirs(os.path.dirname(path), exist_ok=True)  # Ensure the directory exists
                 if log == 'long':
                     logging.info(f"Saving predictions to {path}")
-                output.to_csv(path, index=False)
+                lv_out.to_csv(path, index=False)
 
 def main():
     if args.log != 'off':

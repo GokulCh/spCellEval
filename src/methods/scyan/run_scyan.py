@@ -39,8 +39,9 @@ def run_scyan(
     output_path,
     model_kwargs=None,
     fit_kwargs=None,
+    predict_kwargs=None,
 ):
-    model_kwargs, fit_kwargs = model_kwargs or {}, fit_kwargs or {}   # only what was set; Scyan keeps its own defaults otherwise
+    model_kwargs, fit_kwargs, predict_kwargs = model_kwargs or {}, fit_kwargs or {}, predict_kwargs or {}   # only what was set; Scyan keeps its own defaults otherwise
 
     random.seed(seed)
     np.random.seed(seed)
@@ -92,7 +93,13 @@ def run_scyan(
         model.fit(patience=patience, accelerator=accelerator, **fit_kwargs)
         end_train = time.time()
         start_inference = time.time()
-        model.predict()
+        try:   # Scyan leaves a cell unassigned (NaN) when its best population has log-prior below log_prior_threshold (default -50)
+            model.predict(**predict_kwargs)
+        except TypeError:
+            print("this scyan version has no log_prior_threshold in predict(); using its default", flush=True)
+            model.predict()
+        n_nan = int(adata.obs["scyan_pop"].isna().sum())
+        print(f"run {n}: {n_nan} of {adata.n_obs} cells ({n_nan / adata.n_obs:.1%}) left unassigned by scyan", flush=True)
         end_inference = time.time()
         elapsed_train = end_train - start_train
         elapsed_inference = end_inference - start_inference
@@ -105,11 +112,9 @@ def run_scyan(
         adata.obs[target_col] = adata.obs[target_col].astype(str)
 
         if remove_result_cell_types is not None:
-            remove_result_cell_types = [
-                cell_type.strip() for cell_type in remove_result_cell_types.split(",")
-            ]
-            adata = adata[~adata.obs[target_col].isin(remove_result_cell_types)]
-            adata = adata[~adata.obs["scyan_pop"].isin(remove_result_cell_types)]
+            drop = [c.strip() for c in remove_result_cell_types.split(",")]   # parsed per run: reassigning the argument broke n_runs > 1
+            adata = adata[~adata.obs[target_col].isin(drop)]
+            adata = adata[~adata.obs["scyan_pop"].isin(drop)]
 
         df = adata.to_df()
         df = df.join(adata.obs)
@@ -230,6 +235,7 @@ def main():
         "--output_path", type=str, help="Path to save the predictions CSV file"
     )
 
+    parser.add_argument("--log_prior_threshold", type=float, default=None, help="predict(): cells whose best population has a lower log-prior stay unassigned (scyan default -50; a very negative value assigns every cell)")
     parser.add_argument("--lr", type=float, default=None, help="Scyan learning rate (library default if unset)")
     parser.add_argument("--hidden_size", type=int, default=None)
     parser.add_argument("--n_hidden_layers", type=int, default=None)
@@ -263,6 +269,7 @@ def main():
         output_path=args.output_path,
         model_kwargs=pick("lr", "hidden_size", "n_hidden_layers", "n_layers", "batch_size", "max_samples", "modulo_temp"),
         fit_kwargs=pick("max_epochs", "min_delta"),
+        predict_kwargs=pick("log_prior_threshold"),
     )
 
 

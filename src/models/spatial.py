@@ -64,6 +64,12 @@ def spatial_gnn(t: Task) -> Result:
     for _ in range(p["hops"]):
         hops.append(A @ hops[-1])
     F = np.hstack(hops)
+    if p["model"] == "hgb":      # non-linear gates (CD45+ AND CD3+ AND NOT CD4) that a linear model cannot express
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        from sklearn.utils.class_weight import compute_sample_weight
+        m = HistGradientBoostingClassifier(max_iter=p["max_iter"], learning_rate=0.1, early_stopping=True, random_state=t.seed)
+        m.fit(F[t.train_idx], y, sample_weight=compute_sample_weight("balanced", y))
+        return Result(m.predict(F[t.test_idx]))
     m = make_pipeline(StandardScaler(), LogisticRegression(C=p["C"], max_iter=p["max_iter"], class_weight="balanced",
                                                            random_state=t.seed))
     m.fit(F[t.train_idx], y)
@@ -76,7 +82,10 @@ def knn_smooth(t: Task) -> Result:
     """Spatial neighbourhood smoothing of marker expression (0.5*self + 0.5*neighbour mean) + random forest."""
     y, p = _need_labels(t), of("knn_smooth", t.params)
     A = _row_norm(spatial_graph(t.xy, t.groups, t.k_neighbors))
-    Xs = (1 - p["alpha"]) * t.X + p["alpha"] * (A @ t.X)
+    NB = A @ t.X
+    # concat: own profile + neighbourhood mean (mixing them 50/50 blurs rare cells that sit among other types: only ~38% of a CRC cell's neighbours share its type)
+    Xs = np.hstack([t.X, NB]) if p["concat"] else (1 - p["alpha"]) * t.X + p["alpha"] * NB
     m = RandomForestClassifier(n_estimators=p["n_estimators"], max_depth=p["max_depth"], class_weight="balanced", n_jobs=t.n_jobs, random_state=t.seed)
     m.fit(Xs[t.train_idx], y)
-    return Result(m.predict(Xs[t.test_idx]), m.feature_importances_)
+    imp = m.feature_importances_
+    return Result(m.predict(Xs[t.test_idx]), imp.reshape(-1, t.X.shape[1]).sum(0))

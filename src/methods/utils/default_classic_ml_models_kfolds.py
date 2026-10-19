@@ -31,7 +31,7 @@ class ClassicMLDefault:
         elif model == "random_forest":
             self.model_name = "random_forest"
             self.model = rfc(
-                n_jobs=n_jobs, random_state=random_state, criterion="log_loss", **kwargs
+                n_jobs=n_jobs, random_state=random_state, **{"criterion": "log_loss", **kwargs}     # gini is faster; log_loss stays the default
             )
         elif model == "xgboost":
             self.class_weight = kwargs.pop("class_weight", None)
@@ -144,8 +144,7 @@ class ClassicMLDefault:
                 self.model = rfc(
                     n_jobs=self.model.n_jobs,
                     random_state=self.random_state,
-                    criterion="log_loss",
-                    **self.kwargs,
+                    **{"criterion": "log_loss", **self.kwargs},
                 )
             elif self.model_name == "xgboost":
                 self.model = XGBClassifier(

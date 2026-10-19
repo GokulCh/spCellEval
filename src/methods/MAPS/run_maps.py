@@ -6,6 +6,8 @@ from maps.cell_phenotyping import Trainer
 from sklearn.metrics import confusion_matrix, accuracy_score, classification_report, f1_score, precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
 import json
+import glob
+import re
 import argparse
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -41,7 +43,8 @@ def main(args):
     verbose = 0
     
     # Define the list of fold numbers
-    fold_numbers = [1, 2, 3, 4, 5]
+    fold_numbers = sorted(int(re.search(r"fold_(d+)_", os.path.basename(f)).group(1)) for f in glob.glob(os.path.join(args.input_path, "fold_*_validation.csv")))   # any number of folds
+    fold_accuracies, fold_f1_scores, fold_weighted_f1_scores, fold_precisions, fold_recalls = [], [], [], [], []
 
     # Initialize empty lists to store the train and test data
     train_data = []
@@ -93,7 +96,7 @@ def main(args):
         print(test_data.shape)
         
         num_features = train_data.shape[1] - 1 
-        num_classes = len(test_data["encoded_phenotype"].unique())   # for 20:80 case: changed to test so it is always max
+        num_classes = int(max(d["encoded_phenotype"].max() for d in (train_data, val_data, test_data))) + 1   # labels are 0..K-1; counting only one split drops rare classes and breaks the output layer
         print("Num of features: ", num_features)
         print("Num of classes: ", num_classes)   
     
@@ -143,13 +146,6 @@ def main(args):
         print("F1 Score:", f1)
         print("Weighted F1 Score:", weighted_f1)
         print("="*50)
-
-        scaler = StandardScaler()
-        fold_accuracies = []
-        fold_f1_scores = []
-        fold_weighted_f1_scores = []
-        fold_precisions = []
-        fold_recalls = []
 
         fold_accuracies.append(accuracy)
         fold_f1_scores.append(f1)

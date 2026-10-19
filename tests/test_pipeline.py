@@ -631,7 +631,7 @@ def test_native_method_reads_params_and_tune_writes_the_best(data, tmp_path):
     pf = tmp_path / "params.json"
     out = tmp_path / "tune"
     assert cli.main(["tune", "--data", str(p), "--out", str(out), "--methods", "louvain", "--trials", "3", "--params", str(pf),
-                     "--max-cells", "600"]) == 0
+                     "--max-cells", "600", "--refine", "0", "--min-gain", "0"]) == 0
     log = pd.read_csv(out / "tuning_log.csv")
     assert len(log) == 3 and log.method.eq("louvain").all()
     best = json.loads(pf.read_text())["toy"]["louvain"]
@@ -655,10 +655,83 @@ def test_tuning_uses_validation_never_test_and_writes_summary(data, tmp_path):
     assert sc["properties"]["default"]["properties"]["tacit"]["properties"]["r"]["type"] == ["integer"]
     out = tmp_path / "t"
     assert cli.main(["tune", "--data", str(p), "--out", str(out), "--methods", "louvain", "--trials", "4", "--jobs", "2",
-                     "--stage1-cells", "400", "--finalists", "2", "--params", str(tmp_path / "q.json"), "--max-cells", "1200"]) == 0
+                     "--stage1-cells", "400", "--finalists", "2", "--params", str(tmp_path / "q.json"), "--max-cells", "1200", "--refine-evals", "3"]) == 0
     s = pd.read_csv(out / "tuning_summary.csv")
     assert list(s.method) == ["louvain"] and s.tuned.iloc[0] >= s.current.iloc[0]         # the current setting always competes
-    assert set(pd.read_csv(out / "tuning_log.csv").stage) == {"s", "f"}
+    assert {"s", "f"} <= set(pd.read_csv(out / "tuning_log.csv").stage)
+    assert (out / "tuning_report.md").exists() and (out / "tuning_param_effects.csv").exists()
+
+
+def test_identical_runs_are_trained_once(data, tmp_path, caplog):
+    """hold-out == cv fold 1 and a progressive fraction covering the whole train fold are the same run: reused, not retrained."""
+    from src.evaluation import BenchConfig
+    from src.evaluation.runner import run_dataset
+    p, _ = data
+    cfg = BenchConfig(data=[str(p)], out=str(tmp_path / "o"), methods=["svm"], split="all", splits_dir="out", report=False,
+                      fractions=(0.1, 0.99), params_file=str(tmp_path / "p.json"))
+    with caplog.at_level("INFO", logger="spcelleval"):
+        r = run_dataset(str(p), cfg)["results"]
+    ho, cv0 = r[r.split == "holdout"].iloc[0], r[(r.split == "cv") & (r.fold == 0)].iloc[0]
+    assert ho.f1_macro == cv0.f1_macro and ho.runtime_s == cv0.runtime_s
+    assert "reuses the identical run" in caplog.text
+    assert "cells x" in caplog.text and "loaded" in caplog.text            # the data description is logged
+
+
+def test_crc_labels_have_levels_and_hierarchical_f1():
+    """The old results showed 17 types at every level and no hierarchical F1 (24% of the overall score) for crc_tma."""
+    y = np.array(["CD8+ T cells", "CD4+ T cells", "tumor cells", "macrophages", "stroma"] * 10)
+    assert set(to_level(y, "level2")) == {"T cells", "tumor cells", "myeloid cells", "stromal cells"}
+    assert set(to_level(y, "level1")) == {"immune", "tumor", "stromal"}
+    m = supervised_metrics(y, y)
+    assert m["hierarchical_f1"] == pytest.approx(1.0)
+    p = y.copy()
+    p[y == "CD8+ T cells"] = "CD4+ T cells"                    # same parent: partial/full credit; a cross-lineage mistake scores less
+    q = y.copy()
+    q[y == "CD8+ T cells"] = "tumor cells"
+    assert supervised_metrics(y, p)["hierarchical_f1"] > supervised_metrics(y, q)["hierarchical_f1"]
+
+
+def test_singler_zscore_and_spatial_options_run(data):
+    from src.models import params as mp
+    assert mp.SPACE["singler"]["zscore"][0] is True and "hgb" in mp.SPACE["spatial_gnn"]["model"][1]
+    assert mp.SPACE["knn_smooth"]["concat"][0] is True and mp.check_file() == []
+
+
+def test_crc_signature_from_the_tacit_developer_is_bundled_and_conforms():
+    from src.models.marker import align, conform_matrix, find_marker_matrix, is_nested, load_marker_matrix, specific_scores
+    p = find_marker_matrix("crc_tma", "level3")
+    assert p is not None and p.name == "crc_tma_decision_matrix_level3.csv"
+    raw = load_marker_matrix(p)
+    assert raw.shape == (17, 31) and "CD31 - vasculature:Cyc_19_ch_3" in raw.columns
+    markers = ["CD31", "CD34", "Cytokeratin", "Ki67", "p53", "EGFR", "GranzymeB", "betacatenin", "PDL1", "aSMA", "CD44", "Vimentin",
+               "Podoplanin", "CD45", "CD15", "CD11b", "HLADR", "CD20", "CD11c", "CD163", "CD68", "CD38", "CD138", "CD56", "CD57",
+               "CD3", "CD7", "CD8", "FOXP3", "CD4", "CD45RO", "CD2"]            # dataset names (CD2 is not in the signature)
+    m, dropped = conform_matrix(raw, markers)
+    assert dropped == [] and m.shape == (17, 31) and set(m.columns) <= set(markers)
+    assert set(m.columns[m.loc["CD8+ T cells"] > 0]) == {"CD45", "CD3", "CD7", "CD8"}
+    types, M = align(m, markers)
+    assert is_nested(M)                                        # 'immune cells' (CD45) is the parent of the T / B / myeloid gates
+    X = np.zeros((2, len(markers)))
+    X[:, markers.index("CD45")] = 5                            # both cells are CD45+; the second is also CD3+ CD7+ CD8+
+    X[1, [markers.index(k) for k in ("CD3", "CD7", "CD8")]] = 5
+    ref = np.vstack([np.random.default_rng(0).normal(size=(200, len(markers))) * 0.1, X])
+    S = specific_scores(ref, M)[-2:]
+    assert types[S[0].argmax()] == "immune cells" and types[S[1].argmax()] == "CD8+ T cells"
+
+
+def test_progressive_search_helpers():
+    from src.evaluation.tune import param_effects, pick
+    from src.models import params as mp
+    assert pick({0: 0.80, 1: 0.801, 2: float("nan")}, 0.002) == 0 and pick({0: 0.80, 1: 0.81}, 0.002) == 1     # noise margin
+    assert pick({0: float("nan"), 1: float("nan")}) is None and pick({0: 0.5, 1: 0.5}) == 0                   # ties keep the current
+    t = mp.trials("scyan", 8, 0, {})                       # the ~10^6-combination grid must not be materialised
+    assert len(t) == 8 and len({json.dumps(x, sort_keys=True) for x in t}) == 8
+    alt = dict(mp.alternatives("louvain", {"resolution": 1.0, "k_neighbors": None}))
+    assert 1.0 not in alt["resolution"] and None not in alt["k_neighbors"] and len(alt["resolution"]) == 4
+    log = pd.DataFrame([dict(dataset="d", method="m", stage="t", f1_macro=0.5, params=json.dumps({"a": 1, "b": 2})),
+                        dict(dataset="d", method="m", stage="r", f1_macro=0.7, params=json.dumps({"a": 2, "b": 2}))])
+    e = param_effects(log, "f1_macro")
+    assert list(e.param) == ["a"] and e.best_value.iloc[0] == "2" and e.spread.iloc[0] == pytest.approx(0.2)
 
 
 # ------------------------------------------------------------------ more metrics, text twins of figures, plain-text report

@@ -4,7 +4,7 @@
 # Other GPU:     sbatch --partition=gpu-h100 slurm/run_pipeline_gpu.sbatch   (flags on the command line override the #SBATCH lines)
 # Time limit:    if the partition allows less than 48 h:  sbatch --time=<limit> slurm/run_pipeline_gpu.sbatch
 # Override without editing:   JOBS=8 THREADS=6 ORDER=slow-first OUT=data/results/crc_tma_run2 sbatch slurm/run_pipeline.sbatch
-# Marker matrix:              defaults to data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv; another file: MARKER_MATRIX=<csv> sbatch ...; none (circular auto-draft): MARKER_MATRIX= sbatch ...
+# Marker matrix:              defaults to src/methods/TACIT/crc_tma_decision_matrix_level3.csv; another file: MARKER_MATRIX=<csv> sbatch ...; none (circular auto-draft): MARKER_MATRIX= sbatch ...
 #                             (without one, TACIT / Scyan / Astir / marker_score run on a matrix drafted from the labels; flagged as circular)
 # Different size:             sbatch --cpus-per-task=64 --mem=384G slurm/run_pipeline.sbatch     (JOBS and THREADS follow automatically)
 # Different environment:      PYTHON=/path/to/env/bin/python sbatch slurm/run_pipeline.sbatch   (find it with `which python` inside the env)
@@ -45,7 +45,7 @@ THREADS=${THREADS:-$(( CPUS / 8 ))}
 TIMEOUT=${TIMEOUT:-14400}                         # seconds per method run; Astir / Scyan / STARLING exceeded 3600 on ~200k cells
 ORDER=${ORDER:-fast-first}                        # fast-first: quick results early | slow-first: usually the shortest total time | listed
 
-MARKER_MATRIX=${MARKER_MATRIX-data/datasets/crc_tma/quantification/processed/crc_tma_marker_matrix.csv}   # unset -> the bundled file; set but empty -> none
+MARKER_MATRIX=${MARKER_MATRIX-src/methods/TACIT/crc_tma_decision_matrix_level3.csv}   # unset -> the bundled file; set but empty -> none
 EXTRA=()
 [ -n "${RESUME:-}" ] && EXTRA+=(--resume)          # RESUME=1 sbatch ...: keep finished methods' results, re-run only failed / missing ones
 [ -n "$MARKER_MATRIX" ] && { [ -f "$MARKER_MATRIX" ] || { echo "marker matrix not found: $MARKER_MATRIX"; exit 1; }; EXTRA+=(--marker-matrix "$MARKER_MATRIX"); }

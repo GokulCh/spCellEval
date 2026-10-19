@@ -6,12 +6,15 @@ Input convention follows ``datasets/process_crc_codex.py``: marker columns first
 """
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+log = logging.getLogger("spcelleval")
 LEVEL_COLUMN = {"level3": "cell_type", "level2": "level_2_cell_type", "level1": "level_1_cell_type"}
 PROTEIN = {"codex", "mibi", "imc", "crc_tma", "cycif"}
 RNA = {"scrna", "spatial_rna"}
@@ -87,8 +90,9 @@ def _read(path: Path) -> pd.DataFrame:
 def load_dataset(path: str | Path, name: str | None = None, modality: str = "codex",
                  level: str = "level3", marker_cols: list[str] | None = None,
                  label_col: str | None = None) -> Dataset:
-    path = Path(path)
+    path, t0 = Path(path), time.perf_counter()
     df = normalize_columns(_read(path))
+    n_read = len(df)
     col = label_col or LEVEL_COLUMN[level]
     if col not in df.columns and level != "level3":
         if "cell_type" not in df.columns:
@@ -103,10 +107,14 @@ def load_dataset(path: str | Path, name: str | None = None, modality: str = "cod
     if y is not None:                    # drop unlabeled cells
         ok = ~pd.Series(y).isin(["nan", "None", ""]).to_numpy()
         df, y = df[ok].reset_index(drop=True), y[ok]
+    n_nan = int(df[markers].isna().sum().sum())
     X = df[markers].astype("float32").fillna(0.0).reset_index(drop=True)
     xy = df[["x", "y"]].to_numpy(float) if {"x", "y"} <= set(df.columns) else None
     groups = df["image"].astype(str).to_numpy() if "image" in df.columns else None
     meta = df.drop(columns=markers, errors="ignore").reset_index(drop=True)
+    log.info("loaded %s in %.1fs: %d rows read, %d unlabeled dropped, %d markers (%d NaN values set to 0), label column %s, x/y %s, image column %s",
+             path.name, time.perf_counter() - t0, n_read, n_read - len(df), len(markers), n_nan, col if y is not None else "MISSING",
+             "yes" if xy is not None else "no", "yes" if groups is not None else "no")
     return Dataset(name or path.stem.replace("_quantification", ""), X, markers, y, xy, groups, modality, meta)
 
 
@@ -119,6 +127,7 @@ def transform(ds: Dataset, method: str = "auto", cofactor: float = 5.0, normaliz
     batch_correct: none | median (per-image median centring; harmony needs scanpy, not wired)
     """
     X = ds.X.to_numpy(np.float32, copy=True)
+    log.info("transform: %s (cofactor %g), normalize=%s, batch_correct=%s", method, cofactor, normalize, batch_correct)
     if method == "auto":
         method = "arcsinh" if ds.modality in PROTEIN else "log1p"
     if method == "arcsinh":

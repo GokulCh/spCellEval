@@ -60,6 +60,7 @@ if (args$normalization == TRUE)
 
 #### Run ####
 for (iteration in 1:args$iterations) {
+  set.seed(iteration)   # reproducible, and each iteration differs
   start_time <- Sys.time()
   flowsom_df <- FlowSOM(as.matrix(marker_df), silent = FALSE, nClus = args$flow_nclus,
                         xdim = args$xdim, ydim = args$ydim, rlen = args$rlen, mst = args$mst, distf = args$distf)

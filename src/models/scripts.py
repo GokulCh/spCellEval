@@ -12,6 +12,7 @@ Optional interpreter overrides (e.g. a conda env per method) go in ``configs/scr
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from .base import MethodUnavailable, register_external
 from .marker import conform_matrix, find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml
 
 CONFIG = ROOT / "configs" / "script_methods.json"
+LOG = logging.getLogger("spcelleval")
 CLASSIC_KWARGS = {"logistic_regression": "logistic_regression_model_kwargs_gridsearch.json",
                   "random_forest": "random_forest_model_kwargs.json", "xgboost": "xgboost_model_kwargs.json"}
 CLASSIC_MODELS = ["logistic_regression", "random_forest", "xgboost", "most_frequent", "stratified"]
@@ -160,7 +162,7 @@ def _scyan(c: ScriptCtx) -> list[str]:
             str(path), "--granularity_level", c.ws.level, "--output_path", str(c.out),
             "--n_runs", str(c.n_runs), "--seed", str(c.seed), "--accelerator", "gpu" if c.device == "cuda" else "cpu",
             *_cli(c.params, {k: "--" + k for k in ("prior_std", "patience", "temperature", "scaling", "log1p", "preprocess", "lr", "hidden_size", "n_hidden_layers",
-                                                   "n_layers", "max_epochs", "min_delta", "batch_size", "max_samples", "modulo_temp")})]
+                                                   "n_layers", "max_epochs", "min_delta", "batch_size", "max_samples", "modulo_temp", "log_prior_threshold")})]
 
 
 def _astir(c: ScriptCtx) -> list[str]:
@@ -248,22 +250,24 @@ def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> 
     """Run a script. On failure the full stdout/stderr goes to ``log`` and the error text names the file."""
     out = dict(status="ok", error="", runtime_s=float("nan"))
     t0 = time.perf_counter()
+    LOG.info("running: %s  (cwd %s, timeout %s)", " ".join(cmd)[:700], cwd, f"{timeout:.0f}s" if timeout else "none")
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None)
+        if log is not None:                  # the script's full output is kept for every run, not only failures
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("$ " + " ".join(cmd) + f"\nexit code {p.returncode}\n\n--- stderr ---\n{p.stderr or ''}\n--- stdout ---\n{p.stdout or ''}", encoding="utf-8")
+        LOG.info("finished in %.1fs with exit code %s%s", time.perf_counter() - t0, p.returncode, f" (output: {log})" if log is not None else "")
         if p.returncode:
-            text = (p.stderr or "") + ("\n--- stdout ---\n" + p.stdout if p.stdout else "")
             lines = [l.strip() for l in (p.stderr or p.stdout).splitlines() if l.strip()]
-            where = ""
-            if log is not None:
-                log.parent.mkdir(parents=True, exist_ok=True)
-                log.write_text("$ " + " ".join(cmd) + "\n\n" + text, encoding="utf-8")
-                where = f" (full output: {log})"
+            where = f" (full output: {log})" if log is not None else ""
             out.update(status=_fail_status(p.returncode),
                        error=f"exit {p.returncode}: " + (" | ".join(lines[-4:])[:1000] if lines else "no output") + where)  # last lines: R ends with a bare 'Execution halted'
 
     except subprocess.TimeoutExpired:
+        LOG.warning("timed out after %.0fs: %s", timeout, " ".join(cmd)[:200])
         out.update(status="timeout", error=f"exceeded {timeout:.0f}s")
     except FileNotFoundError as e:
+        LOG.warning("not found: %s", e.filename or cmd[0])
         out.update(status="skipped", error=f"{e.filename or cmd[0]} not found")
     out["runtime_s"] = time.perf_counter() - t0
     return out
@@ -280,7 +284,8 @@ def parse_fold_times(path: Path) -> dict[int, float]:
     return t
 
 
-def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, timeout: float, params: dict | None = None) -> dict:
+def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, timeout: float, params: dict | None = None,
+                device: str = "cpu") -> dict:
     """Run methods/classic_ml/run_classic_ml_default.py in its ``--main_dir`` mode on ``root`` (the workspace root or a
     single-fold variant root; both use the repo's datasets/<name>/quantification/processed layout). The script then
     writes ``<root>/results/<name>/<model>_default_<kfold>/<level>/`` with predictions_fold_<i>.csv, fold_times.txt and
@@ -293,6 +298,8 @@ def run_classic(model: str, root: Path, ws: Workspace, seed: int, n_jobs: int, t
            "--n_jobs_model", str(n_jobs), "--scaling", "Yes", "--dumb_columns", ",".join(dumb), "--verbose", "0"]
     kw, params = CLASSIC_KWARGS.get(model), dict(params or {})
     cmd[cmd.index("--scaling") + 1] = str(params.pop("scaling", "Yes"))        # standardise the markers first (Yes / No)
+    if model == "xgboost" and device == "cuda":
+        params.setdefault("device", "cuda")                                    # xgboost >= 2: GPU histogram trees, many times faster
     extra = [str(x) for x in params.pop("extra_args", [])]
     if params:                                  # the bundled kwargs, overridden by the configured model parameters
         base = json.loads((METHODS / "classic_ml" / kw).read_text()) if kw else {}

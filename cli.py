@@ -24,6 +24,7 @@ import argparse
 import importlib.util
 import json
 import logging
+import os
 import sys
 import time
 import traceback
@@ -82,9 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--order", choices=["fast-first", "slow-first", "listed"], default="fast-first",
                         help="queue order of the methods: fast-first (quick results early), slow-first (starts the slowest "
                              "methods at once; usually finishes the whole run sooner) or the order given")
-        sp.add_argument("--model-threads", type=int, default=1,
+        sp.add_argument("--model-threads", type=int, default=0,
                         help="CPU threads inside each method that supports it (random forest, XGBoost, ...). "
-                             "Use about cpus / --jobs so the two together fit your allocation")
+                             "0 (default) = all CPUs divided by --jobs, so the two together fit the machine")
         sp.add_argument("--device", choices=["cpu", "gpu", "auto"], default="auto")
         sp.add_argument("--seed", type=int, default=0)
         sp.add_argument("--repeats", type=int, default=1,
@@ -135,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="two-stage search: score every candidate on this many cells first, then re-score only the best "
                          "--finalists (and the current setting) on all the data (0 = single stage)")
     sp.add_argument("--finalists", type=int, default=3)
+    sp.add_argument("--budgets", default="", help="successive halving: comma list of growing cell counts (e.g. 5000,20000); each round keeps the best 1/--eta of the candidates")
+    sp.add_argument("--eta", type=int, default=3)
+    sp.add_argument("--refine", type=int, default=1, help="coordinate-descent passes from the winner, one parameter at a time on all the data (0 = off)")
+    sp.add_argument("--refine-evals", type=int, default=0, help="max evaluations spent refining (0 = same as --trials)")
+    sp.add_argument("--min-gain", type=float, default=0.002, help="a candidate must beat the incumbent by more than this to replace it (noise margin)")
     sp.epilog = "Trials are scored on the validation split of private folds, never the test split. --jobs runs that many trials in parallel."
 
     sp = add("params", help="show every method's parameters, defaults and search candidates; --init writes them for a dataset")
@@ -392,8 +398,9 @@ def cmd_tune(a) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True,
                         handlers=[logging.StreamHandler(), logging.FileHandler(out / "tune.log", encoding="utf-8")])
     cfg = bench_config(a)
-    log = tune(cfg, cfg.methods, a.trials, a.metric, a.tune_seed, a.jobs, a.stage1_cells, a.finalists)
-    print(f"\n{len(log)} trials; log: {out / 'tuning_log.csv'}, current vs tuned: {out / 'tuning_summary.csv'} (+ tuning_gain.png)")
+    log = tune(cfg, cfg.methods, a.trials, a.metric, a.tune_seed, a.jobs, a.stage1_cells, a.finalists,
+               tuple(int(x) for x in a.budgets.split(",") if x), a.eta, a.refine, a.min_gain, a.refine_evals)
+    print(f"\n{len(log)} trials; log: {out / 'tuning_log.csv'}, current vs tuned: {out / 'tuning_summary.csv'} (+ tuning_gain.png); what changed and why: {out / 'tuning_report.md'}")
     print(f"best values saved to {a.params or 'configs/method_params.json'}; tuned on validation splits only - run `benchmark` for the reported scores.")
 
 
@@ -433,7 +440,7 @@ def bench_config(a):
         kfold_method=a.kfold_method, script_runs=a.script_runs, resume=getattr(a, "resume", False), fractions=tuple(float(f) for f in a.fractions.split(",")),
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
-        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
+        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads or max(1, (os.cpu_count() or 1) // max(a.jobs, 1)), order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
         device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None),
         params_file=getattr(a, "params", None), val_pct=a.val_pct,
         pseudo_min_score=a.pseudo_min_score, pseudo_min_margin=a.pseudo_min_margin)

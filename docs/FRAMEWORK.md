@@ -122,6 +122,8 @@ processed/
 
 ## Marker decision matrices
 
+For `crc_tma` the bundled matrix is the signature file from the TACIT developer (`src/methods/TACIT/crc_tma_decision_matrix_level3.csv`, verbatim, raw channel names such as `CD31 - vasculature:Cyc_19_ch_3`). Column names are mapped to the dataset's markers on load (`conform_matrix`; the run log lists any column that matches nothing). It is a nested gating hierarchy with positive markers only (`immune cells` = CD45, `CD8+ T cells` = CD45 + CD3 + CD7 + CD8), so `marker_score` (mode `auto`) picks the most specific type whose markers are all above average instead of the plain mean z-score. Tribus has no logic table for CRC and is reported as skipped.
+
 TACIT, Scyan, Astir and `marker_score` need one. Order of use: `--marker-matrix <csv>`, else the repo's bundled matrix for the
 dataset, else (labelled data only) a **draft created from the dataset's own labels** (`<out>/<dataset>/auto_marker_matrix.csv`: +1 for each
 type's top-3 markers with mean z >= 1). That draft is circular - the methods are scored against the answers it was built from - so

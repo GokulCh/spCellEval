@@ -33,7 +33,7 @@ import pandas as pd
 
 from ..models import REGISTRY, MethodUnavailable, Task, resolve_device, run_isolated
 from ..models import params as mparams
-from ..models.marker import AUTO_NOTE, PRIOR_METHODS, draft_matrix, find_marker_matrix, load_marker_matrix, pseudo_labels
+from ..models.marker import AUTO_NOTE, PRIOR_METHODS, conform_matrix, draft_matrix, find_marker_matrix, load_marker_matrix, pseudo_labels
 from ..models.scripts import ScriptCtx, classic_importance, parse_fold_times, run_classic, run_script
 from ..models.spatial import spatial_vote
 from ..preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
@@ -128,10 +128,23 @@ def out_dir_for(cfg: BenchConfig, name: str) -> Path:
     return (Path(cfg.out) / name).resolve()
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=8)
 def _prepared(path, modality, level, max_cells, seed, transform_, cofactor, normalize, batch_correct):
     ds = load_dataset(path, modality=modality, level=level)
     return transform(ds.subsample(max_cells, seed), transform_, cofactor, normalize, batch_correct)
+
+
+def _describe(ds, cfg: BenchConfig) -> None:
+    """One log block describing the data every method is about to see (size, balance, value range, spatial info)."""
+    X = ds.X.to_numpy(np.float32)
+    msg = [f"{ds.name}: {len(ds):,} cells x {len(ds.markers)} markers; values {np.nanmin(X):.3g}..{np.nanmax(X):.3g} (mean {np.nanmean(X):.3g}), "
+           f"transform={cfg.transform}, modality={cfg.modality}"]
+    if ds.y is not None:
+        vc = pd.Series(ds.y).value_counts()
+        msg.append(f"{len(vc)} {cfg.level} classes; largest {vc.index[0]} ({vc.iloc[0] / len(ds):.1%}), smallest {vc.index[-1]} ({vc.iloc[-1]:,} cells); "
+                   f"{int((vc < 100).sum())} classes under 100 cells")
+    msg.append(f"images: {len(np.unique(ds.groups)) if ds.groups is not None else 'none'}; spatial coordinates: {'yes' if ds.xy is not None else 'no'}")
+    log.info("\n    ".join(msg))
 
 
 def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
@@ -139,6 +152,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     ds = prep(str(path), cfg.modality, cfg.level, cfg.max_cells, cfg.seed, cfg.transform, cfg.cofactor, cfg.normalize, cfg.batch_correct)
     X, n = ds.X.to_numpy(np.float32), len(ds)
     sup = cfg.mode == "supervised"
+    _describe(ds, cfg)
     if sup and ds.y is None:
         raise ValueError(f"{ds.name}: supervised mode needs a '{cfg.level}' label column")
     try:
@@ -165,6 +179,18 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                     "TACIT / Scyan / Astir / marker_score results that use it are circular (not independent prior knowledge). "
                     "Pass --marker-matrix to use a real one, or --no-auto-matrix to skip those methods.", ds.name, mpath)
     matrix = load_marker_matrix(mpath) if mpath else None
+    if matrix is not None:           # published signature files use raw channel names ("CD31 - vasculature:Cyc_19_ch_3"): map them to this dataset's markers
+        matrix, dropped = conform_matrix(matrix, ds.markers)
+        per = (matrix != 0).sum(1)
+        log.info("[%s] marker matrix %s: %d cell types x %d dataset markers matched (markers per type %d..%d, %d negative entries)%s",
+                 ds.name, Path(mpath).name, len(matrix), matrix.shape[1], per.min(), per.max(), int((matrix < 0).sum().sum()),
+                 f"; {len(dropped)} matrix column(s) match no dataset marker and are ignored: {', '.join(dropped)}" if dropped else "")
+        unused = [m for m in ds.markers if m not in matrix.columns]
+        if unused:
+            log.info("[%s] markers not used by the matrix: %s", ds.name, ", ".join(unused))
+        absent = sorted(set(np.unique(ds.y)) - set(matrix.index)) if ds.y is not None else []
+        if absent:
+            log.warning("[%s] cell types in the data that the matrix cannot predict: %s", ds.name, ", ".join(absent))
     pseudo = ok = None
     if matrix is not None:
         try:
@@ -189,18 +215,17 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     lab = ds.y if sup else (pseudo if pseudo is not None else ds.y)         # labels the methods see
     conf = np.ones(n, int) if (sup or ok is None) else ok.astype(int)
     extra = {"spc_confident": conf, **({} if ds.y is None or sup else {"gt_cell_type": ds.y})}
+    if cfg.tune_on_validation and cfg.splits_dir in (None, "auto"):
+        raise ValueError("tune_on_validation swaps each fold's test file for its validation file, so it needs a private splits_dir (the tuner sets one)")
     store = resolve_store(cfg.splits_dir, path, ds.name, len(cfg.data) > 1) if sup else None
     ws_all = build_workspace(ds, lab, out_dir / "workspace", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
-                             val_pct=cfg.val_pct, make_folds=sup, extra=extra, store=store)
+                             val_pct=cfg.val_pct, make_folds=sup, extra=extra, store=store,
+                             validation_split_as_test=cfg.tune_on_validation)
     ws_tr = ws_all if sup else None
     if not sup and (conf == 1).sum() >= cfg.folds * 10 and len(np.unique(lab[conf == 1])) >= 2:
         ws_tr = build_workspace(ds, lab, out_dir / "workspace_pseudo", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
-                                val_pct=cfg.val_pct, rows=np.where(conf == 1)[0], extra=extra)       # semi-supervised: confident cells only
-    if cfg.tune_on_validation:                    # tuning: every method is scored on the validation split, never on the test split
-        if store is not None:
-            raise ValueError("tune_on_validation rewrites the fold files, so it needs splits_dir='out' (private folds)")
-        for w in {id(w): w for w in (ws_all, ws_tr) if w is not None}.values():
-            validation_as_test(w)
+                                val_pct=cfg.val_pct, rows=np.where(conf == 1)[0], extra=extra,       # semi-supervised: confident cells only
+                                validation_split_as_test=cfg.tune_on_validation)
     folds = ws_tr.folds() if ws_tr else []
     jobs: list[dict] = []
     if folds:
@@ -279,8 +304,9 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
             r, lv_rows, cl_rows = score(df, key)
             row.update(r)
         im = [] if imp is None or split_ == "progressive" else [dict(**key, marker=m, importance=float(v)) for m, v in zip(ds.markers, imp)]
-        log.info("[%s] %-24s %-11s fold=%s frac=%s -> %s %s", ds.name, name, split_, fold, fraction, run["status"],
-                 f"f1={row['f1_macro']:.3f}" if "f1_macro" in row else row["error"])
+        log.info("[%s] %-24s %-11s fold=%s frac=%s -> %s %s | %.1fs", ds.name, name, split_, fold, fraction, run["status"],
+                 " ".join(f"{k}={row[k]:.3f}" for k in ("f1_macro", "f1_weighted", "mcc", "accuracy", "unassigned_fraction") if k in row and row[k] == row[k])
+                 or row["error"], run.get("runtime_s", NAN))
         return row, im, lv_rows, cl_rows
 
     def with_votes(recs_in, base, wanted):
@@ -318,32 +344,47 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                 if not folds:
                     return skip("no training folds (needs labels or >= 2 pseudo-label classes)")
                 units = [j for j in jobs if j["split"] in ("cv", "holdout", "progressive")]
+                has_cv, has_ho = any(j["split"] == "cv" for j in units), any(j["split"] == "holdout" for j in units)
+                # The hold-out IS cv fold 1, and a progressive fraction that covers the whole train fold is the same
+                # training set again: train once and reuse that run for them (same data, same seed -> same model).
+                src = "cv" if has_cv else ("holdout" if has_ho else None)
+                full = [j for j in units if j["split"] == "progressive" and src and j["tr"] is folds[0]["train"]]
                 runs = []
-                if any(j["split"] == "cv" for j in units):
+                if has_cv:
                     runs.append(("cv", lambda: ws_tr.root, None, None))
                 for j in units:
-                    if j["split"] == "holdout":
+                    if j["split"] == "holdout" and not has_cv:
                         runs.append(("holdout", lambda: make_variant(ws_tr, f"{base}_h", 0), None, None))
-                    if j["split"] == "progressive":
+                    if j["split"] == "progressive" and not any(j is x for x in full):
                         runs.append(("progressive", lambda j=j: make_variant(ws_tr, f"{base}_p{j['fraction']}", 0, j["tr"]), j["fraction"], j))
+
+                def twins(sp):
+                    """The (split, fraction) records that share the fold-1 run of split sp instead of being trained again."""
+                    return ([("holdout", NAN)] if sp == "cv" and has_ho else []) + ([("progressive", x["fraction"]) for x in full] if sp == src else [])
+
                 for sp, root_fn, fr, j in runs:
+                    log.info("[%s] %-24s classic-ML script, %s run%s", ds.name, base, sp, f" (fraction {fr})" if fr is not None else "")
                     try:
-                        r = run_classic(base, root_fn(), ws_tr, cfg.seed, cfg.n_jobs_model, cfg.timeout, P(base, True))
+                        r = run_classic(base, root_fn(), ws_tr, cfg.seed, cfg.n_jobs_model, cfg.timeout, P(base, True), device)
                     except Exception as e:                                   # one failing unit must not drop the others
-                        add(sp, 0, fr if fr is not None else NAN, dict(status="failed", error=f"{type(e).__name__}: {e}"),
-                            None, None, "", NAN)
+                        for sp2, fr2 in [(sp, fr if fr is not None else NAN), *twins(sp)]:
+                            add(sp2, 0, fr2, dict(status="failed", error=f"{type(e).__name__}: {e}"), None, None, "", NAN)
                         continue
                     if r["status"] != "ok" or not r["files"]:
-                        add(sp, 0, fr if fr is not None else NAN, dict(status=r["status"] if r["status"] != "ok" else "failed",
-                            error=r["error"] or "no predictions written", runtime_s=r["runtime_s"]), None, None, "", NAN)
+                        for sp2, fr2 in [(sp, fr if fr is not None else NAN), *twins(sp)]:
+                            add(sp2, 0, fr2, dict(status=r["status"] if r["status"] != "ok" else "failed",
+                                error=r["error"] or "no predictions written", runtime_s=r["runtime_s"]), None, None, "", NAN)
                         continue
                     for i, f in enumerate(r["files"]):
                         d = pd.read_csv(f)
                         sp_fold = i if sp == "cv" else 0
                         ntr = len(folds[i]["train"]) if sp == "cv" else (len(j["tr"]) if j else len(folds[0]["train"]))
-                        add(sp, sp_fold, fr if fr is not None else NAN,
-                            dict(status="ok", runtime_s=r["fold_times"].get(i + 1, r["runtime_s"] / len(r["files"]))),
-                            d, classic_importance(r["out"], base, i + 1, len(ds.markers)) if sp != "progressive" else None, str(f), ntr)
+                        run_ = dict(status="ok", runtime_s=r["fold_times"].get(i + 1, r["runtime_s"] / len(r["files"])))
+                        imp = classic_importance(r["out"], base, i + 1, len(ds.markers)) if sp != "progressive" else None
+                        add(sp, sp_fold, fr if fr is not None else NAN, run_, d, imp, str(f), ntr)
+                        if i == 0:
+                            for sp2, fr2 in twins(sp):
+                                add(sp2, 0, fr2, run_, d, None if sp2 == "progressive" else imp, str(f), ntr)
             elif m.impl == "script":
                 spec = m.spec
                 ctx = ScriptCtx(ws_all, out_dir / ("_runs" if spec.nested else base) / (base if spec.nested else cfg.level),
@@ -399,7 +440,11 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
             runnable = False                      # reported as 'skipped' by _run_method
         t0, stop = time.perf_counter(), threading.Event()
         if runnable:
-            log.info("[%s] %-24s started (%s)", ds.name, base, m.impl)
+            try:
+                log.info("[%s] %-24s started (%s) device=%s threads=%s params=%s", ds.name, base, m.impl, device, cfg.n_jobs_model,
+                         json.dumps(P(base), default=str)[:600])
+            except ValueError:
+                log.info("[%s] %-24s started (%s)", ds.name, base, m.impl)
 
             def heartbeat():
                 while not stop.wait(300):
@@ -421,7 +466,13 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
         if m.trainable:
             if not folds:
                 raise MethodUnavailable("no training folds (needs labels or >= 2 pseudo-label classes)")
+            seen = {}                                            # same train/test arrays -> same run (hold-out = cv fold 1 = the full progressive fraction)
             for j in jobs:
+                k = (id(j["tr"]), id(j["te"]))
+                if k in seen:
+                    log.info("[%s] %-24s %s fold=%s reuses the identical run already done", ds.name, base, j["split"], j["fold"])
+                    recs.append((j["split"], j["fold"], j["fraction"], *seen[k], len(j["tr"])))
+                    continue
                 task = Task(X, train_idx=j["tr"], test_idx=j["te"], y_train=lab[j["tr"]], **task_kw)
                 r = run_isolated(base, task, cfg.timeout)
                 df, imp = None, None
@@ -429,6 +480,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                     df = frame(j["te"], r["result"].labels.astype(str))
                     imp = r["result"].importance
                 pf = save(df, base, j["split"], j["fold"], j["fraction"]) if (df is not None and cfg.save_predictions) else ""
+                seen[k] = (r, df, imp, pf)
                 recs.append((j["split"], j["fold"], j["fraction"], r, df, imp, pf, len(j["tr"])))
         else:                                                                  # clusterers / priors: one run over all cells
             allr = np.arange(n)
