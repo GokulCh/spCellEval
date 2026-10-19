@@ -22,7 +22,7 @@ RSCRIPT=${RSCRIPT:-/lustre/home/chaluvadig/anaconda3/envs/cta/bin/Rscript}
 [ -x "$RSCRIPT" ] || { echo "Rscript not found: $RSCRIPT (pass RSCRIPT=<path>)"; exit 1; }
 export PATH="$(dirname "$RSCRIPT"):$PATH"
 OUT=${OUT:-data/results/tacit_reference}
-RAW=${RAW:-data/datasets/crc_tma/raw/CRC_TMA_expression.csv}
+RAW=${RAW:-data/datasets/crc_tma/quantification/raw/CRC_TMA_expression.csv}
 SIG=${SIG:-src/methods/TACIT/crc_tma_decision_matrix_level3.csv}
 export MC_CORES=${R_THREADS:-16} OMP_NUM_THREADS=${R_THREADS:-16}      # TACIT uses parallelly::availableCores() - 1
 

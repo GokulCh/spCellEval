@@ -11,7 +11,7 @@ suppressPackageStartupMessages({ library(readr); library(dplyr) })
 
 a <- commandArgs(trailingOnly = TRUE)
 arg <- function(i, d) if (length(a) >= i && nzchar(a[i])) a[i] else d
-raw_csv <- arg(1, "data/datasets/crc_tma/raw/CRC_TMA_expression.csv")
+raw_csv <- arg(1, "data/datasets/crc_tma/quantification/raw/CRC_TMA_expression.csv")
 sig_csv <- arg(2, "src/methods/TACIT/crc_tma_decision_matrix_level3.csv")
 out_dir <- arg(3, "data/results/tacit_reference")
 r <- as.integer(arg(4, "200")); p <- as.integer(arg(5, "20"))
