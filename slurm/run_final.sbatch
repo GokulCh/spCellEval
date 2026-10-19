@@ -51,6 +51,7 @@ EXTRA=(); [ -n "${RESUME:-}" ] && EXTRA+=(--resume)
 echo "python=$PYTHON"; echo "data=$DATA"; echo "out=$OUT  params=$OUT/method_params.json (from $PARAMS)"
 echo "methods=$METHODS script-runs=$SCRIPT_RUNS repeats=$REPEATS jobs=$JOBS threads=$THREADS timeout=${TIMEOUT}s"
 nvidia-smi -L 2>/dev/null || echo "no GPU visible (the GPU methods fall back to CPU)"
+export SPC_NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)      # >1 GPU: the script methods are spread over them in turn
 
 "$PYTHON" -u cli.py params --check --params "$OUT/method_params.json"
 

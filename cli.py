@@ -435,12 +435,15 @@ def cmd_run(a) -> None:
 
 def bench_config(a):
     from src.evaluation import BenchConfig
+    threads = a.model_threads or max(1, (os.cpu_count() or 1) // max(a.jobs, 1))
+    for v in ("MC_CORES", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(v, str(threads))      # every script process inherits this: BLAS / R workers must not each grab the whole machine
     return BenchConfig(
         data=a.data, out=a.out, methods=resolve_methods(a.methods), mode=a.mode, split=a.split, folds=a.folds,
         kfold_method=a.kfold_method, script_runs=a.script_runs, resume=getattr(a, "resume", False), fractions=tuple(float(f) for f in a.fractions.split(",")),
         modality=a.modality,
         transform=a.transform, cofactor=a.cofactor, normalize=a.normalize, batch_correct=a.batch_correct,
-        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=a.model_threads or max(1, (os.cpu_count() or 1) // max(a.jobs, 1)), order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
+        level=a.level, marker_matrix=a.marker_matrix, auto_matrix=not a.no_auto_matrix, tacit_r=a.tacit_resolution, tacit_p=a.tacit_dims, n_jobs_model=threads, order=a.order, max_cells=a.max_cells, timeout=a.timeout, jobs=a.jobs,
         device=a.device, seed=a.seed, k_neighbors=a.k_neighbors, splits_dir=getattr(a, "splits_dir", None),
         params_file=getattr(a, "params", None), val_pct=a.val_pct,
         pseudo_min_score=a.pseudo_min_score, pseudo_min_margin=a.pseudo_min_margin)

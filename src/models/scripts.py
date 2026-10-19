@@ -11,12 +11,15 @@ Optional interpreter overrides (e.g. a conda env per method) go in ``configs/scr
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +36,17 @@ from .marker import (add_nested_negatives, conform_matrix, find_bundled, find_ma
 
 CONFIG = ROOT / "configs" / "script_methods.json"
 LOG = logging.getLogger("spcelleval")
+_GPU_NEXT, _GPU_LOCK = itertools.count(), threading.Lock()
+
+
+def _gpu_env() -> dict:
+    """With SPC_NUM_GPUS > 1 (set by the sbatch scripts) every script process is pinned to the next GPU in turn; without it all of them
+    would share device 0 and the other cards would sit idle."""
+    n = int(os.environ.get("SPC_NUM_GPUS", "1") or 1)
+    if n < 2:
+        return {}
+    with _GPU_LOCK:
+        return {"CUDA_VISIBLE_DEVICES": str(next(_GPU_NEXT) % n)}
 CLASSIC_KWARGS = {"logistic_regression": "logistic_regression_model_kwargs_gridsearch.json",
                   "random_forest": "random_forest_model_kwargs.json", "xgboost": "xgboost_model_kwargs.json"}
 CLASSIC_MODELS = ["logistic_regression", "random_forest", "xgboost", "most_frequent", "stratified"]
@@ -256,9 +270,11 @@ def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> 
     """Run a script. On failure the full stdout/stderr goes to ``log`` and the error text names the file."""
     out = dict(status="ok", error="", runtime_s=float("nan"))
     t0 = time.perf_counter()
-    LOG.info("running: %s  (cwd %s, timeout %s)", " ".join(cmd)[:700], cwd, f"{timeout:.0f}s" if timeout else "none")
+    gpu = _gpu_env()
+    LOG.info("running: %s  (cwd %s, timeout %s%s)", " ".join(cmd)[:700], cwd, f"{timeout:.0f}s" if timeout else "none",
+             f", GPU {gpu['CUDA_VISIBLE_DEVICES']}" if gpu else "")
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None)
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None, env={**os.environ, **gpu})
         if log is not None:                  # the script's full output is kept for every run, not only failures
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text("$ " + " ".join(cmd) + f"\nexit code {p.returncode}\n\n--- stderr ---\n{p.stderr or ''}\n--- stdout ---\n{p.stdout or ''}", encoding="utf-8")

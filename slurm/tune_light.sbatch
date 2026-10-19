@@ -54,6 +54,7 @@ echo "python=$PYTHON"; echo "data=$DATA"; echo "out=$OUT"
 echo "methods=$TUNE_METHODS"
 echo "trials=$TRIALS budgets=$BUDGETS refine-evals=$REFINE_EVALS jobs=$JOBS threads=$THREADS trial-timeout=${TRIAL_TIMEOUT}s"
 nvidia-smi -L 2>/dev/null || echo "no GPU visible"
+export SPC_NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)      # >1 GPU: the script methods are spread over them in turn
 
 "$PYTHON" -u cli.py params --check --params "$OUT/method_params.json"
 
