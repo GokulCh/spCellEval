@@ -97,6 +97,18 @@ Every benchmark run writes both. Nothing needs the images to be understood:
 
 Metrics per run: accuracy, balanced accuracy, macro / weighted F1, macro / weighted precision and recall, MCC, Cohen's kappa, ARI, NMI, homogeneity, completeness, V-measure, Fowlkes-Mallows, G-mean, hierarchical F1, sensitivity / specificity, rare vs abundant accuracy and F1, unassigned fraction, classes never predicted, composition recovery (R², Pearson, JSD), spatial smoothness of the predictions, runtime, memory, stability, scalability. Figures include ranking, all-metrics and per-class heatmaps, metric ranks, fold variability with 95% CIs, precision vs recall, rare vs abundant, unassigned / missed classes, spatial smoothness, cluster agreement, paired tests against the best method, confusion matrices, spatial maps, composition recovery, data-scarcity curves, runtime / scalability, and cross-dataset ranks and spread. `python cli.py visualize --results <out>` rebuilds all of it from saved results.
 
+### Annotating a new, unlabelled dataset
+
+```
+python cli.py annotate --data new_quantification.csv --marker-matrix signature.csv --out results/annotate
+# an expert fixes labels in results/annotate/review_table.csv (column expert_label, or a cluster,label CSV), then:
+python cli.py annotate --data new_quantification.csv --marker-matrix signature.csv --out results/annotate --review results/annotate/review_table.csv
+```
+
+Over-clusters with Leiden (`--resolution`, default 10), scores each micro-cluster against the signature (`src/models/marker.py`), labels low-confidence
+clusters `Ambiguous`, exports a review table + marker-median heatmap + spatial overlay, trains XGBoost on the confident/reviewed cells to label the rest, and
+writes label-free QC (signature purity, marker enrichment, spatial homophily, composition per image). Code: `src/annotate.py`; `--help` lists all options.
+
 ### Evaluation Scripts
 The notebooks in  `src/metrics_scripts` perform the evaluation over all methods. The code blocks withiin `eval_mapping.ipynb` goes through all the methods within a specified dataset and outputs a `final_results.csv` file that contains all of the metrics for different levels. 
 

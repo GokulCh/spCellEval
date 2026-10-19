@@ -12,6 +12,8 @@
     python cli.py benchmark  --data a.csv b.csv --split all --timeout 1800 --jobs 4
     python cli.py benchmark  --data d.csv --mode unsupervised --marker-matrix m.csv
     python cli.py visualize  --results results/benchmark   # re-run analysis + figures from saved results
+    python cli.py annotate   --data new.csv --marker-matrix signature.csv     # NEW unlabelled data: over-cluster -> match -> review -> propagate -> QC
+    python cli.py annotate   --data new.csv --marker-matrix signature.csv --review results/annotate/review_table.csv   # after the expert edited it
     python cli.py params     --dataset IMMUcan --init       # list every method's parameters; write a per-dataset block to edit
     python cli.py tune       --data d.csv --methods xgboost,leiden --trials 12   # find the best parameters, save them to configs/method_params.json
 
@@ -143,6 +145,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-gain", type=float, default=0.002, help="a candidate must beat the incumbent by more than this to replace it (noise margin)")
     sp.epilog = "Trials are scored on the validation split of private folds, never the test split. --jobs runs that many trials in parallel."
 
+    sp = add("annotate", help="annotate a NEW dataset with NO ground truth: over-cluster, match to a signature, expert review, propagate, QC")
+    sp.add_argument("--data", nargs="+", required=True, help="ONE quantification table (markers first, then x / y / image); labels, if any, are ignored")
+    sp.add_argument("--marker-matrix", required=True, help="signature / decision matrix CSV (cell types x markers, +1 / -1 / blank)")
+    sp.add_argument("--out", default="results/annotate")
+    sp.add_argument("--review", help="CSV with columns cluster + label (or the expert_label column of review_table.csv) from the expert; "
+                                     "reuses the saved clustering, applies the labels, 'Ambiguous' sends a cluster to the model")
+    sp.add_argument("--resolution", type=float, default=10.0, help="Leiden resolution; high (5-20) gives 50-100+ micro-clusters")
+    sp.add_argument("--k-neighbors", type=int, default=15, help="kNN graph for clustering")
+    sp.add_argument("--spatial-k", type=int, default=10, help="neighbours for the spatial-coherence QC")
+    sp.add_argument("--min-score", type=float, default=0.5, help="a cluster's best signature score must reach this (mean marker z)")
+    sp.add_argument("--min-margin", type=float, default=0.25, help="required score margin over the runner-up type")
+    sp.add_argument("--min-support", type=float, default=0.0, help="the weakest signature marker's cluster-median z must reach this")
+    sp.add_argument("--modality", choices=MODALITIES, default="codex")
+    sp.add_argument("--transform", choices=["auto", "arcsinh", "log1p", "none"], default="auto")
+    sp.add_argument("--cofactor", type=float, default=5.0)
+    sp.add_argument("--max-cells", type=int, default=0, help="random subsample for quick runs (0 = all)")
+    sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--jobs", type=int, default=4, help="threads for the supervised model")
+    sp.epilog = ("Outputs in --out: review_table.csv, figures/cluster_marker_medians, figures/ambiguous_spatial, annotations.csv "
+                 "(final_label, label_source = cluster|expert|propagated, confidence), qc/ (purity, marker enrichment, spatial homophily, "
+                 "composition per image), annotate.log.")
+
     sp = add("params", help="show every method's parameters, defaults and search candidates; --init writes them for a dataset")
     sp.add_argument("--methods", default="all")
     sp.add_argument("--dataset", help="dataset name (data file name without _quantification): show / --init its settings")
@@ -248,6 +272,21 @@ def cmd_marker_template(a) -> None:
         print("  WARNING: this draft was derived from your own labels, so it is not independent prior knowledge. It is only good for checking that\n"
               "  TACIT / Scyan / Astir run. For a real benchmark, replace it with marker definitions from the literature or the data's authors.")
     print(f"  use it with:  --marker-matrix {out}")
+
+
+def cmd_annotate(a) -> None:
+    from src.annotate import annotate
+    if len(a.data) != 1:
+        raise ValueError("give a single table to --data")
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", force=True,
+                        handlers=[logging.StreamHandler(), logging.FileHandler(out / "annotate.log", encoding="utf-8")])
+    pred = annotate(a.data[0], a.marker_matrix, out, a.resolution, a.k_neighbors, a.review, a.min_score, a.min_margin, a.min_support,
+                    a.transform, a.cofactor, a.modality, a.seed, a.jobs, a.max_cells, a.spatial_k)
+    print(f"annotated {len(pred)} cells: {pred.label_source.value_counts().to_dict()}")
+    print(f"review table (edit expert_label, then re-run with --review): {out / 'review_table.csv'}")
+    print(f"annotations: {out / 'annotations.csv'}; QC: {out / 'qc'}; log: {out / 'annotate.log'}")
 
 
 def cmd_methods(_) -> None:
@@ -795,7 +834,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         {"methods": cmd_methods, "preprocess": cmd_preprocess, "train": cmd_run, "benchmark": cmd_run,
          "visualize": cmd_visualize, "analyze": cmd_analyze, "pipeline": cmd_pipeline, "convert": cmd_convert,
-         "marker-template": cmd_marker_template, "tune": cmd_tune, "params": cmd_params}[a.cmd](a)
+         "marker-template": cmd_marker_template, "annotate": cmd_annotate, "tune": cmd_tune, "params": cmd_params}[a.cmd](a)
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return 130

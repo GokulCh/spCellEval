@@ -768,3 +768,44 @@ def test_shipped_params_file_is_valid_and_resolves_for_every_method():
         assert set(mp.resolve("any_dataset", m, explicit=True)) <= set(mp.SPACE[m])
     assert mp.resolve("any_dataset", "maps")["max_epochs"] > 2 and mp.resolve("any_dataset", "scyan")["preprocess"] is True
     assert mp.check_file(None) == [] and mp.schema()["properties"]["_notes"]
+
+
+# ------------------------------------------------------------------ annotate (new dataset, no labels)
+def _unlabeled(data, tmp_path):
+    p, mm = data
+    q = tmp_path / "new_quantification.csv"
+    pd.read_csv(p).drop(columns=["cell_type"]).to_csv(q, index=False)        # what a brand-new dataset looks like
+    return q, mm
+
+
+def test_annotate_cluster_first_review_roundtrip_and_qc(data, tmp_path):
+    q, mm = _unlabeled(data, tmp_path)
+    truth = pd.read_csv(data[0]).cell_type.to_numpy()
+    out = tmp_path / "ann"
+    args = ["annotate", "--data", str(q), "--marker-matrix", str(mm), "--out", str(out), "--resolution", "5", "--jobs", "1"]
+    assert cli.main(args) == 0
+    rt = pd.read_csv(out / "review_table.csv")
+    assert {"cluster", "n_cells", "assigned_type", "confidence", "top_markers", "runner_up", "expert_label"} <= set(rt.columns)
+    assert len(rt) > len(TYPES) and rt.n_cells.sum() == len(truth)                     # over-clustered
+    ann = pd.read_csv(out / "annotations.csv")
+    assert (ann.final_label.to_numpy() == truth).mean() > 0.95                          # signature + clusters recover the toy types
+    assert {"final_label", "label_source", "confidence"} <= set(ann.columns) and ann.confidence.between(0, 1).all()
+    qc = json.loads((out / "qc" / "qc_summary.json").read_text())
+    assert qc["cluster_purity_vs_signature"] > 0.9 and qc["spatial_homophily"] > 0.5 and "marker_enrichment" in qc
+    assert (out / "qc" / "composition_per_image.csv").exists() and (out / "annotate.log").exists()
+
+    c_amb, c_fix = int(rt.cluster.iloc[0]), int(rt.cluster.iloc[-1])                    # expert: one cluster unknown, one relabelled
+    rev = tmp_path / "review.csv"
+    pd.DataFrame({"cluster": [c_amb, c_fix], "label": ["Ambiguous", "Cancer"]}).to_csv(rev, index=False)
+    assert cli.main([*args, "--review", str(rev)]) == 0
+    a2 = pd.read_csv(out / "annotations.csv")
+    assert (a2[a2.cluster == c_fix].final_label == "Cancer").all() and (a2[a2.cluster == c_fix].label_source == "expert").all()
+    assert (a2[a2.cluster == c_amb].label_source == "propagated").all()                 # predicted by the supervised model
+    assert set(a2[a2.cluster == c_amb].final_label) <= set(TYPES)
+
+
+def test_annotate_needs_a_confident_cluster_and_one_table(data, tmp_path, capsys):
+    q, mm = _unlabeled(data, tmp_path)
+    assert cli.main(["annotate", "--data", str(q), "--marker-matrix", str(mm), "--out", str(tmp_path / "o"), "--min-margin", "1e9"]) == 2
+    assert "no confident or reviewed cluster" in capsys.readouterr().out
+    assert cli.main(["annotate", "--data", str(q), str(q), "--marker-matrix", str(mm), "--out", str(tmp_path / "o2")]) == 2
