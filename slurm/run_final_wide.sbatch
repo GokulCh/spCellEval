@@ -1,5 +1,5 @@
 #!/bin/bash
-# WIDE variant of run_final.sbatch: all methods start at once on a bigger allocation (45 CPUs, 1 GPU). Edit the #SBATCH lines to what your
+# WIDE variant of run_final.sbatch: 10 methods run at once on a bigger allocation (45 CPUs, 1 GPU). Edit the #SBATCH lines to what your
 # node allows; keep JOBS x THREADS <= CPUs. The run then takes about as long as the slowest method (Starling) instead of the sum of many.
 # The full benchmark on crc_tma: every method (heavy ones included) with the tuned parameters from slurm/tune_light.sbatch.
 # Methods that were not tuned (Scyan, Astir, TACIT, Starling, MAPS, Stellar, Tribus) keep the shipped settings in the same file.
@@ -9,7 +9,7 @@
 # Resume (re-runs only failed / missing methods):   RESUME=1 sbatch slurm/run_final.sbatch
 # Options: PARAMS (default data/results/crc_tma_tuned/method_params.json; falls back to configs/method_params.json)
 #          OUT (data/results/crc_tma_final)   METHODS (all)   SCRIPT_RUNS (1; use 3 for stability numbers of the script methods)
-#          REPEATS (1; 3 = whole run over 3 seeds)   JOBS (20 = one per method)   THREADS (2)   TIMEOUT (43200 s per method run)
+#          REPEATS (1; 3 = whole run over 3 seeds)   JOBS (10 methods at once)   THREADS (4)   TIMEOUT (43200 s per method run)
 # Read first: $OUT/summary/AI_REPORT.md (sanity checks at the top), $OUT/benchmark.log, $OUT/crc_tma/matrix_agreement.csv
 #SBATCH --job-name=spc_final_wide
 #SBATCH --output=logs/spc_final_wide_%j.out
@@ -36,8 +36,8 @@ MARKER_MATRIX=${MARKER_MATRIX:-src/methods/TACIT/crc_tma_decision_matrix_level3.
 METHODS=${METHODS:-all}
 SCRIPT_RUNS=${SCRIPT_RUNS:-1}
 REPEATS=${REPEATS:-1}
-JOBS=${JOBS:-20}
-THREADS=${THREADS:-2}
+JOBS=${JOBS:-10}
+THREADS=${THREADS:-4}
 TIMEOUT=${TIMEOUT:-43200}
 
 [ -f "$DATA" ] || { echo "data not found: $DATA"; exit 1; }
