@@ -9,7 +9,7 @@ library(parallelly)
 library(TACIT)
 library(argparse)
 
-run_TACIT <- function(n, input_path, separate_col, scaling, log1p, decision_matrix_path, r, p, output_path) {
+run_TACIT <- function(n, input_path, separate_col, scaling, log1p, decision_matrix_path, r, p, output_path, undo_arcsinh = NULL) {
   data <- read_csv(input_path)
   
   CELLxFEATURE <- data %>% 
@@ -22,11 +22,19 @@ run_TACIT <- function(n, input_path, separate_col, scaling, log1p, decision_matr
   if (log1p) {
     CELLxFEATURE[feature_cols] <- log1p(CELLxFEATURE[feature_cols])
   }
+  if (!is.null(undo_arcsinh) && undo_arcsinh > 0) {
+    # TACIT was designed for (and published on) raw intensities: its microclustering, its per-cell-type score (a weighted SUM of
+    # intensities) and its thresholds all assume them. The benchmark table holds arcsinh(x / cofactor), which is exactly invertible.
+    CELLxFEATURE[feature_cols] <- undo_arcsinh * sinh(CELLxFEATURE[feature_cols])
+    message(sprintf("TACIT input: arcsinh undone with cofactor %g (raw intensities %g..%g)", undo_arcsinh,
+                    min(unlist(CELLxFEATURE[feature_cols])), max(unlist(CELLxFEATURE[feature_cols]))))
+  }
   data <- data %>%
     rename(true_phenotype = cell_type)
   
   TYPExMARKER <- read_csv(decision_matrix_path)
   inference_times <- numeric(n)
+  message(sprintf("TACIT: %d cells, %d markers, %d cell types, r=%s p=%s", nrow(CELLxFEATURE), length(feature_cols), nrow(TYPExMARKER), r, p))
   for(i in 1:n) {
     start_time <- Sys.time()
     TACIT_result <- TACIT(CELLxFEATURE, TYPExMARKER, r=r, p=p)
@@ -72,9 +80,21 @@ main <- function() {
                       help="Dimension. TNumber of dimensions used for microclusters")
   parser$add_argument("--output_path", type="character", required=TRUE,
                       help="Directory to save prediction CSV files")
+  parser$add_argument("--undo_arcsinh", type="double", default=NULL,
+                      help="the table holds arcsinh(x / COFACTOR): convert back to raw intensities first (TACIT's published setting)")
+  parser$add_argument("--use_repo_source", action="store_true",
+                      help="use the TACIT code vendored in <repo>/TACIT/R instead of the installed package (they can differ in version)")
   args <- parser$parse_args()
+  message("installed TACIT package: ", tryCatch(as.character(packageVersion("TACIT")), error = function(e) "unknown"),
+          "; TACIT() arguments: ", paste(names(formals(TACIT)), collapse = ", "))
+  if (isTRUE(args$use_repo_source)) {
+    f <- file.path(dirname(normalizePath(sub("--file=", "", commandArgs(trailingOnly = FALSE)[grep("--file=", commandArgs(trailingOnly = FALSE))]))),
+                   "..", "..", "..", "TACIT", "R", "TACIT_function.R")
+    tryCatch({ source(normalizePath(f)); message("using the vendored TACIT code: ", normalizePath(f)) },
+             error = function(e) message("could not source ", f, " (", conditionMessage(e), "); using the installed package"))
+  }
   options(future.globals.maxSize = 6 * 1024^3)
-  run_TACIT(args$iterations, args$input_path,args$separate_col, args$scaling, args$log1p, args$decision_matrix_path, args$r, args$p, args$output_path)
+  run_TACIT(args$iterations, args$input_path,args$separate_col, args$scaling, args$log1p, args$decision_matrix_path, args$r, args$p, args$output_path, args$undo_arcsinh)
 }
 
 main()

@@ -67,7 +67,7 @@ def spatial_gnn(t: Task) -> Result:
     if p["model"] == "hgb":      # non-linear gates (CD45+ AND CD3+ AND NOT CD4) that a linear model cannot express
         from sklearn.ensemble import HistGradientBoostingClassifier
         from sklearn.utils.class_weight import compute_sample_weight
-        m = HistGradientBoostingClassifier(max_iter=p["max_iter"], learning_rate=0.1, early_stopping=True, random_state=t.seed)
+        m = HistGradientBoostingClassifier(max_iter=min(p["max_iter"], 300), learning_rate=0.1, early_stopping=True, random_state=t.seed)
         m.fit(F[t.train_idx], y, sample_weight=compute_sample_weight("balanced", y))
         return Result(m.predict(F[t.test_idx]))
     m = make_pipeline(StandardScaler(), LogisticRegression(C=p["C"], max_iter=p["max_iter"], class_weight="balanced",

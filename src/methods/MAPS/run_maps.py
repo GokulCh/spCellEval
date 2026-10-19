@@ -43,7 +43,7 @@ def main(args):
     verbose = 0
     
     # Define the list of fold numbers
-    fold_numbers = sorted(int(re.search(r"fold_(d+)_", os.path.basename(f)).group(1)) for f in glob.glob(os.path.join(args.input_path, "fold_*_validation.csv")))   # any number of folds
+    fold_numbers = sorted(int(re.search(r"fold_(\d+)_", os.path.basename(f)).group(1)) for f in glob.glob(os.path.join(args.input_path, "fold_*_validation.csv")))   # any number of folds
     fold_accuracies, fold_f1_scores, fold_weighted_f1_scores, fold_precisions, fold_recalls = [], [], [], [], []
 
     # Initialize empty lists to store the train and test data

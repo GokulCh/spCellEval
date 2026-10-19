@@ -33,7 +33,7 @@ import pandas as pd
 
 from ..models import REGISTRY, MethodUnavailable, Task, resolve_device, run_isolated
 from ..models import params as mparams
-from ..models.marker import AUTO_NOTE, PRIOR_METHODS, conform_matrix, draft_matrix, find_marker_matrix, load_marker_matrix, pseudo_labels
+from ..models.marker import AUTO_NOTE, PRIOR_METHODS, conform_matrix, draft_matrix, find_marker_matrix, load_marker_matrix, matrix_agreement, pseudo_labels
 from ..models.scripts import ScriptCtx, classic_importance, parse_fold_times, run_classic, run_script
 from ..models.spatial import spatial_vote
 from ..preprocessing import build_workspace, load_dataset, make_variant, progressive, transform
@@ -203,6 +203,17 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
 
     out_dir = (Path(cfg.out) / ds.name).resolve()      # absolute: the repo scripts run from their own folders
     out_dir.mkdir(parents=True, exist_ok=True)
+    if matrix is not None and ds.y is not None:       # does the signature describe the labelled cells? (explains the prior-knowledge methods' ceiling)
+        try:
+            ag = matrix_agreement(X, ds.markers, matrix, ds.y)
+            ag.to_csv(out_dir / "matrix_agreement.csv", index=False)
+            weak = ag[ag.pct_cells_passing_all < 50]
+            log.info("[%s] signature vs labels: on average only %.0f%% of a type's cells have all its signature markers above average; "
+                     "%d of %d types are under 50%% (%s). Full table: %s", ds.name, ag.pct_cells_passing_all.mean(), len(weak), len(ag),
+                     ", ".join(f"{r.cell_type} {r.pct_cells_passing_all:.0f}% [weakest {r.weakest_marker} z={r.weakest_marker_mean_z:.2f}]"
+                               for r in weak.itertuples()) or "none", out_dir / "matrix_agreement.csv")
+        except Exception as e:                       # a diagnostic must never stop the run
+            log.warning("[%s] signature diagnostic skipped: %s", ds.name, e)
     try:                                              # the exact parameters every method ran with (for the text report / reproduction)
         used = {m: P(m) for m in dict.fromkeys(w.removesuffix("+vote") for w in cfg.methods)}
         (out_dir / "params_used.json").write_text(json.dumps(used, indent=2, default=str), encoding="utf-8")
@@ -217,7 +228,8 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
     extra = {"spc_confident": conf, **({} if ds.y is None or sup else {"gt_cell_type": ds.y})}
     if cfg.tune_on_validation and cfg.splits_dir in (None, "auto"):
         raise ValueError("tune_on_validation swaps each fold's test file for its validation file, so it needs a private splits_dir (the tuner sets one)")
-    store = resolve_store(cfg.splits_dir, path, ds.name, len(cfg.data) > 1) if sup else None
+    # a subsampled run (--max-cells) must not publish its folds next to the user's data: they would not match the full table
+    store = resolve_store(cfg.splits_dir, path, ds.name, len(cfg.data) > 1) if sup and not (cfg.max_cells and cfg.splits_dir in (None, "auto")) else None
     ws_all = build_workspace(ds, lab, out_dir / "workspace", cfg.level, cfg.kfold_method, cfg.seed, cfg.folds,
                              val_pct=cfg.val_pct, make_folds=sup, extra=extra, store=store,
                              validation_split_as_test=cfg.tune_on_validation)

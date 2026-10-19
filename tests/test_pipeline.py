@@ -709,8 +709,12 @@ def test_crc_signature_from_the_tacit_developer_is_bundled_and_conforms():
     m, dropped = conform_matrix(raw, markers)
     assert dropped == [] and m.shape == (17, 31) and set(m.columns) <= set(markers)
     assert set(m.columns[m.loc["CD8+ T cells"] > 0]) == {"CD45", "CD3", "CD7", "CD8"}
+    from src.models.marker import add_nested_negatives
+    neg = add_nested_negatives(m)
+    assert neg.loc["CD4+ T cells", "FOXP3"] == -1 and neg.loc["CD3+ T cells", "CD8"] == -1 and neg.loc["immune cells", "CD3"] == -1
+    assert ((neg > 0) == (m > 0)).all().all() and (neg.loc["CD8+ T cells"] >= 0).all()      # positives untouched; leaf types get no negatives
     types, M = align(m, markers)
-    assert is_nested(M)                                        # 'immune cells' (CD45) is the parent of the T / B / myeloid gates
+    assert is_nested(M)                                      # 'immune cells' (CD45) is the parent of the T / B / myeloid gates
     X = np.zeros((2, len(markers)))
     X[:, markers.index("CD45")] = 5                            # both cells are CD45+; the second is also CD3+ CD7+ CD8+
     X[1, [markers.index(k) for k in ("CD3", "CD7", "CD8")]] = 5

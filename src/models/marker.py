@@ -70,6 +70,29 @@ def align(matrix: pd.DataFrame, markers: list[str]) -> tuple[list[str], np.ndarr
     return list(matrix.index[keep]), M[keep]
 
 
+def add_nested_negatives(matrix: pd.DataFrame) -> pd.DataFrame:
+    """Gating hierarchies list only positive markers, so a parent ('CD4+ T cells') looks identical to its children ('Tregs' = CD4 +
+    FOXP3). Mark each parent as NEGATIVE (-1) for the extra markers of its descendants (CD4+ T cells: FOXP3-, CD45RO-; 'immune
+    cells' = CD45 only: negative for every lineage marker). This is the same rule TACIT applies internally (a parent is cleared when a
+    child's extra marker is positive); methods that can use negative markers (Scyan, Tribus) need it spelled out."""
+    out, P = matrix.copy(), matrix > 0
+    sets = {t: set(matrix.columns[P.loc[t].to_numpy()]) for t in matrix.index}
+    for a, pa in sets.items():
+        for d, pd_ in sets.items():
+            if a != d and pa and pa < pd_:                    # d is a strict specialisation of a
+                for m in pd_ - pa:
+                    out.loc[a, m] = -1
+    return out
+
+
+def to_tribus_xlsx(matrix: pd.DataFrame, path: str | Path, negatives: bool = True) -> Path:
+    """Tribus logic table (one 'Global' sheet: rows = markers, columns = cell types, 1 / -1 / 0) from a decision matrix."""
+    t = (add_nested_negatives(matrix) if negatives else matrix).T
+    t.index.name = "Marker"
+    t.to_excel(path, sheet_name="Global")                    # needs openpyxl
+    return Path(path)
+
+
 def is_nested(M: np.ndarray) -> bool:
     """True when some type's defining markers are a strict subset of another's (e.g. 'immune cells' = CD45 and 'CD8 T cells' =
     CD45 + CD3 + CD8): a gating hierarchy, where the most specific matching type should win over its parent."""
@@ -129,6 +152,31 @@ def marker_score(t: Task) -> Result:
     S = specific_scores(t.X_test, M) if mode == "specific" else marker_scores(t.X_test, M)
     lab = np.array(types, dtype=object)[S.argmax(1)]
     return Result(np.where(S.max(1) > p["min_score"], lab, "Unknown").astype(str))
+
+
+def matrix_agreement(X, markers, matrix, y, thr: float = 0.0) -> pd.DataFrame:
+    """Diagnostic: how well does the signature describe the cells that carry each label?
+
+    Per cell type: the share of its labelled cells whose every signature marker is above average (z > thr), and the signature
+    marker with the weakest class-mean z. A low share means the labels were not produced by this signature, which caps every
+    prior-knowledge method (TACIT, Scyan, Astir, marker_score) however well it is implemented. Uses the labels for reporting
+    only; nothing is fed back into any method.
+    """
+    X = np.asarray(X, float)
+    Z = (X - X.mean(0)) / np.where(X.std(0) == 0, 1, X.std(0))
+    col, y, rows = {m: i for i, m in enumerate(markers)}, np.asarray(y).astype(str), []
+    for t, r in matrix.iterrows():
+        pos = [col[m] for m, v in r.items() if v > 0 and m in col]
+        mask = y == str(t)
+        if not pos or not mask.any():
+            continue
+        zt = Z[mask][:, pos]
+        mean_z = zt.mean(0)
+        rows.append(dict(cell_type=t, n_cells=int(mask.sum()), n_markers=len(pos), markers=",".join(markers[i] for i in pos),
+                         pct_cells_passing_all=100 * float((zt > thr).all(1).mean()), weakest_marker=markers[pos[int(mean_z.argmin())]],
+                         weakest_marker_mean_z=float(mean_z.min()), mean_marker_z=float(mean_z.mean())))
+    return pd.DataFrame(rows, columns=["cell_type", "n_cells", "n_markers", "markers", "pct_cells_passing_all", "weakest_marker",
+                                       "weakest_marker_mean_z", "mean_marker_z"])
 
 
 PRIOR_METHODS = {"tacit", "scyan", "astir", "marker_score"}      # the methods that need a marker decision matrix

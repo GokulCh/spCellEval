@@ -166,7 +166,9 @@ def _child(q, name: str, task: Task) -> None:
     import src.models  # noqa: F401  (registers methods in the spawned interpreter)
     t0 = time.perf_counter()
     try:
-        res = run_inprocess(name, task)
+        import joblib      # this is a daemon process: joblib's default (loky) backend refuses to start workers here and silently
+        with joblib.parallel_backend("threading"):      # drops sklearn's n_jobs to 1 - use threads so RF / kNN get their cores
+            res = run_inprocess(name, task)
         q.put(("ok", res, time.perf_counter() - t0, _rss_mb()))
     except MethodUnavailable as e:
         q.put(("skipped", str(e), 0.0, None))

@@ -28,7 +28,8 @@ from ..repo import METHODS, ROOT
 from ..preprocessing.workspace import Workspace
 from ..preprocessing.data import LEVEL_COLUMN
 from .base import MethodUnavailable, register_external
-from .marker import conform_matrix, find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml
+from .marker import (add_nested_negatives, conform_matrix, find_bundled, find_marker_matrix, load_marker_matrix, to_astir_yaml,
+                     to_tribus_xlsx)
 
 CONFIG = ROOT / "configs" / "script_methods.json"
 LOG = logging.getLogger("spcelleval")
@@ -109,8 +110,11 @@ def _astir_yaml(ctx: ScriptCtx) -> Path:
 
 def _tribus_xlsx(ctx: ScriptCtx) -> Path:
     p = find_bundled(ctx.dataset, "tribus", "logic_table_{ds}_" + ctx.ws.level + ".xlsx")
-    if p is None:
-        raise MethodUnavailable(f"tribus needs a logic_table xlsx (bundled only for IMMUcan, cHL_2_MIBI), none for '{ctx.dataset}'")
+    if p is None:                  # no bundled table: build one from the dataset's decision matrix (1 / -1 / 0 per marker x type)
+        try:
+            return to_tribus_xlsx(_conformed(ctx, "scyan"), ctx.ws.root / "tribus_logic.xlsx")
+        except ImportError as e:
+            raise MethodUnavailable(f"tribus: no bundled logic table for '{ctx.dataset}' and writing one needs openpyxl ({e})")
     return p
 
 
@@ -147,11 +151,13 @@ def _tacit(c: ScriptCtx) -> list[str]:
     m.to_csv(path)
     return ["--input_path", str(c.ws.quant), "--decision_matrix_path", str(path),
             "--separate_col", c.ws.split_col, "--output_path", str(c.out), "-n", str(c.n_runs),
-            *_cli(c.params, {"r": "-r", "p": "-p"})]
+            *_cli(c.params, {"r": "-r", "p": "-p", "raw_cofactor": "--undo_arcsinh", "use_repo_source": "--use_repo_source"})]
 
 
 def _scyan(c: ScriptCtx) -> list[str]:
     m = _conformed(c, "scyan")
+    if c.params.get("derive_negatives"):      # parents become -1 for their descendants' extra markers (positive-only matrices)
+        m = add_nested_negatives(m)
     m.index.name = "Populations"
     if c.params.get("zeros_as_nan"):
         m = m.mask(m == 0)      # Scyan reads 0 as "expressed at the mean"; NaN means "marker not relevant for this type"
