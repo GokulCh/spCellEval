@@ -1,13 +1,15 @@
 #!/bin/bash
-# Parameter tuning for the light and medium methods only (no Scyan, Astir, TACIT, Starling, MAPS, Stellar, Tribus: each trial of those is a
-# full multi-minute to multi-hour run, and the prior-knowledge ones are limited by the signature, not by their settings).
+# Parameter tuning for ALL the tunable methods, ordered light -> heavy so partial results are useful if the job is stopped. Methods are tuned one
+# after the other (each method's trials run JOBS at a time) and each method's best values are saved the moment it finishes. Heavy methods (Starling, Scyan,
+# Astir, MAPS, Stellar, Tribus, Leiden, FlowSOM) make this a multi-day job: lower TRIALS / REFINE_EVALS to shorten it.
 #
 # Submit:   mkdir -p logs && sbatch slurm/tune_light.sbatch
+# Light methods only:  TUNE_METHODS=xgboost,random_forest,logistic_regression,svm,singler,knn_smooth,marker_score,spade sbatch slurm/tune_light.sbatch
 # Resume:   RESUME=1 sbatch slurm/tune_light.sbatch          (keeps the parameters already tuned in $OUT/method_params.json)
 # Options (environment variables):
-#   TUNE_METHODS   methods to tune          TRIALS (12)   random candidates per method (plus the current setting)
-#   REFINE_EVALS (8)   one-at-a-time refinement evaluations on all the data       BUDGETS (5000,20000)   successive-halving subsample sizes
-#   JOBS (8)  trials at once   THREADS (4)  CPU threads inside each trial   (keep JOBS x THREADS <= CPUs)   TRIAL_TIMEOUT (7200 s)
+#   TUNE_METHODS   methods to tune          TRIALS (8)   random candidates per method (plus the current setting)
+#   REFINE_EVALS (4)   one-at-a-time refinement evaluations on all the data       BUDGETS (5000,20000)   successive-halving subsample sizes
+#   JOBS (8)  trials at once   THREADS (4)  CPU threads inside each trial   (keep JOBS x THREADS <= CPUs)   TRIAL_TIMEOUT (21600 s = 6 h)
 # Output: $OUT/method_params.json (the tuned parameters), $OUT/tune/tuning_report.md (what changed and which parameters mattered),
 #         tuning_summary.csv, tuning_log.csv, tuning_gain.png, tune.log.
 # The repo's configs/method_params.json is never modified.
@@ -16,7 +18,7 @@
 #SBATCH --error=logs/spc_tune_%j.out
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --time=96:00:00
 #SBATCH --partition=gpu-a100
 #SBATCH --gres=gpu:1
 
@@ -31,13 +33,13 @@ cd /lustre/home/chaluvadig/VCU_HEALTH/spCellEval
 DATA=${DATA:-/lustre/home/chaluvadig/VCU_HEALTH/spCellEval/data/datasets/crc_tma/quantification/processed/crc_tma_quantification.csv}
 OUT=${OUT:-data/results/crc_tma_tuned}
 MARKER_MATRIX=${MARKER_MATRIX:-src/methods/TACIT/crc_tma_decision_matrix_level3.csv}
-TUNE_METHODS=${TUNE_METHODS:-xgboost,random_forest,logistic_regression,svm,singler,knn_smooth,spatial_gnn,marker_score,spade,louvain,leiden,flowsom}
-TRIALS=${TRIALS:-12}
-REFINE_EVALS=${REFINE_EVALS:-8}
+TUNE_METHODS=${TUNE_METHODS:-xgboost,random_forest,logistic_regression,svm,singler,knn_smooth,marker_score,spade,tacit,louvain,spatial_gnn,leiden,flowsom,scyan,astir,maps,stellar,starling,tribus}
+TRIALS=${TRIALS:-8}
+REFINE_EVALS=${REFINE_EVALS:-4}
 BUDGETS=${BUDGETS:-5000,20000}
 JOBS=${JOBS:-8}
 THREADS=${THREADS:-4}
-TRIAL_TIMEOUT=${TRIAL_TIMEOUT:-7200}
+TRIAL_TIMEOUT=${TRIAL_TIMEOUT:-21600}
 
 [ -f "$DATA" ] || { echo "data not found: $DATA"; exit 1; }
 [ -f "$MARKER_MATRIX" ] || { echo "marker matrix not found: $MARKER_MATRIX"; exit 1; }

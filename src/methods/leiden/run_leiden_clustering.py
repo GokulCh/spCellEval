@@ -27,6 +27,7 @@ parser.add_argument('-l', '--log', dest='log', required= False, default='off', c
 parser.add_argument('-it', '--iterations', dest='iterations', type=int, required= False, default=5, help='Number of iterations to run (default: 5)')
 parser.add_argument('-r', '--resolutions', dest='resolutions', nargs='+', type=float, required= False, default=[0.5, 0.8, 1.0, 2.0], help='List of resolutions for Leiden clustering (default: [0.5, 0.8, 1.0, 2.0])')
 parser.add_argument('--n_neighbors', dest='n_neighbors', type=int, default=10, help='Neighbours of the kNN graph (default: 10)')
+parser.add_argument('--levels', dest='levels', nargs='+', default=['level3', 'level2', 'level1'], help='granularity levels to write (each is a full copy of the table per resolution; default: all three)')
 parser.add_argument('--n_pcs', dest='n_pcs', type=int, default=30, help='PCA components when --PCA or --harmony is used (default: 30)')
 args = parser.parse_args()
 
@@ -108,7 +109,7 @@ def leiden_with_greedy(adata, df, iterations, output_path, log, resolutions):
 
             for k in granularity:
                 ## greedy assignement
-                if k not in output.columns:
+                if k not in output.columns or granularity[granularity==k].index[0] not in args.levels:
                     continue
                 results = greedy_f1_score(output, k, resolution, tie_strategy='random')
                 # a fresh frame per level: renaming the label column in place gave later levels two 'true_phenotype' columns (the level-3 truth first)

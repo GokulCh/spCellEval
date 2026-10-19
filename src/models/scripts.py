@@ -131,7 +131,7 @@ def _cli(p: dict, flags: dict[str, str]) -> list[str]:
 
 
 def _leiden(c: ScriptCtx) -> list[str]:
-    return ["-i", str(c.ws.quant), "-o", str(c.out), "-m", *c.ws.markers, "-it", str(c.n_runs), "-l", "short",
+    return ["-i", str(c.ws.quant), "-o", str(c.out), "-m", *c.ws.markers, "-it", str(c.n_runs), "-l", "short", "--levels", c.ws.level,
             *_cli(c.params, {"resolutions": "-r", "n_neighbors": "--n_neighbors", "pca": "-p", "n_pcs": "--n_pcs", "normalization": "-n"})]
 
 
