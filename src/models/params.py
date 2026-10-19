@@ -28,7 +28,7 @@ SPACE: dict[str, dict[str, tuple]] = {
             "class_weight": ("balanced", _C("balanced", None)), "max_rbf_cells": (20000, []), "scale": (True, _C(True, False))},
     "louvain": {"resolution": (1.0, _C(0.5, 1.0, 2.0, 4.0, 8.0)), "k_neighbors": (None, _C(5, 10, 15, 30))},
     "spade": {"n_clusters": (None, _C(30, 50, 80, 120)), "linkage": ("ward", _C("ward", "average", "complete")), "max_cells": (5000, _C(2000, 5000, 10000))},
-    "singler": {"n_top": (500, _C(20, 40, 100, 500)), "zscore": (True, _C(True, False))},
+    "singler": {"n_top": (500, _C(20, 40, 100, 500)), "zscore": (False, _C(False, True))},
     "scanvi": {"epochs": (50, _C(25, 50, 100)), "n_latent": (10, _C(5, 10, 30)), "n_hidden": (128, _C(64, 128, 256)),
                "n_layers": (1, _C(1, 2)), "batch_size": (128, _C(64, 128, 256)), "lr": (None, _C(0.0005, 0.001, 0.002))},
     "scarches": {"epochs": (50, _C(25, 50, 100)), "query_epochs": (20, _C(10, 20, 50)), "n_latent": (10, _C(5, 10, 30)), "n_hidden": (128, _C(64, 128, 256)),

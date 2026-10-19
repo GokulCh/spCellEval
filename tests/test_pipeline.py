@@ -693,7 +693,7 @@ def test_crc_labels_have_levels_and_hierarchical_f1():
 
 def test_singler_zscore_and_spatial_options_run(data):
     from src.models import params as mp
-    assert mp.SPACE["singler"]["zscore"][0] is True and "hgb" in mp.SPACE["spatial_gnn"]["model"][1]
+    assert mp.SPACE["singler"]["zscore"][0] is False and "hgb" in mp.SPACE["spatial_gnn"]["model"][1]
     assert mp.SPACE["knn_smooth"]["concat"][0] is True and mp.check_file() == []
 
 
