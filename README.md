@@ -107,7 +107,7 @@ python cli.py annotate --data new_quantification.csv --marker-matrix signature.c
 
 Over-clusters with Leiden (`--resolution`, default 10), scores each micro-cluster against the signature (`src/models/marker.py`), labels low-confidence
 clusters `Ambiguous`, exports a review table + marker-median heatmap + spatial overlay, trains XGBoost on the confident/reviewed cells to label the rest, and
-writes label-free QC (signature purity, marker enrichment, spatial homophily, composition per image). Code: `src/annotate.py`; `--help` lists all options.
+writes label-free QC (signature purity, marker enrichment, spatial homophily, composition per image). Code: `src/annotate.py`; `--help` lists all options. On the cluster: `DATA=... MARKER_MATRIX=... OUT=... sbatch slurm/annotate.sbatch` (add `REVIEW=<csv>` for the second pass).
 
 ### Evaluation Scripts
 The notebooks in  `src/metrics_scripts` perform the evaluation over all methods. The code blocks withiin `eval_mapping.ipynb` goes through all the methods within a specified dataset and outputs a `final_results.csv` file that contains all of the metrics for different levels. 
