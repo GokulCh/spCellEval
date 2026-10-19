@@ -89,9 +89,11 @@ def write_text_report(out: str | Path, max_rows: int = 40) -> Path:
             for r in g.itertuples():
                 if r.n_true_classes > 2 and r.n_predicted_classes <= 2:
                     warn.append(f"- **{ds}/{r.method}**: predicts only {r.n_predicted_classes} class(es) ({r.top_predicted_class} = {r.top_predicted_share:.0%}) while the truth has {r.n_true_classes}")
+                if r.n_true_classes > 4 and 2 < r.n_predicted_classes < 0.6 * r.n_true_classes:
+                    warn.append(f"- **{ds}/{r.method}**: predicts only {r.n_predicted_classes} of the {r.n_true_classes} cell types (most common: {r.top_predicted_class} = {r.top_predicted_share:.0%})")
                 if r.unassigned_share > 0.5:
                     warn.append(f"- **{ds}/{r.method}**: {r.unassigned_share:.0%} of the cells are left unassigned (undefined / unknown / others)")
-        L += ["## Sanity checks on the predictions\n", "\n".join(warn) if warn else "No identical, single-class or mostly-unassigned predictions found.", "",
+        L += ["## Sanity checks on the predictions\n", "\n".join(warn) if warn else "No identical, single-class, low-coverage or mostly-unassigned predictions found.", "",
               _tbl(dg, ["dataset", "method", "n_true_classes", "n_predicted_classes", "top_predicted_class", "top_predicted_share", "unassigned_share", "correct_share"], 80)]
         short += ["## Sanity checks\n", "\n".join(warn) if warn else "No identical, single-class or mostly-unassigned predictions found.", ""]
     # ----------------------------------------------------------------- parameters

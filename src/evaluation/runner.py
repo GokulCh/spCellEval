@@ -391,7 +391,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                         d = pd.read_csv(f)
                         sp_fold = i if sp == "cv" else 0
                         ntr = len(folds[i]["train"]) if sp == "cv" else (len(j["tr"]) if j else len(folds[0]["train"]))
-                        run_ = dict(status="ok", runtime_s=r["fold_times"].get(i + 1, r["runtime_s"] / len(r["files"])))
+                        run_ = dict(status="ok", runtime_s=r["fold_times"].get(i + 1, r["runtime_s"] / len(r["files"])), mem_mb=r.get("mem_mb"))
                         imp = classic_importance(r["out"], base, i + 1, len(ds.markers)) if sp != "progressive" else None
                         add(sp, sp_fold, fr if fr is not None else NAN, run_, d, imp, str(f), ntr)
                         if i == 0:
@@ -408,7 +408,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                         return skip("no training folds")
                     r = run_script(base, ctx, cfg.timeout)
                     for f in r["files"]:
-                        add("cv", max(f["run"] - 1, 0), NAN, dict(status="ok", runtime_s=r["runtime_s"] / max(len(r["files"]), 1)),
+                        add("cv", max(f["run"] - 1, 0), NAN, dict(status="ok", runtime_s=r["runtime_s"] / max(len(r["files"]), 1), mem_mb=r.get("mem_mb")),
                             pd.read_csv(f["path"]), None, str(f["path"]), NAN)
                     if not r["files"]:
                         add("cv", 0, NAN, dict(status=r["status"] if r["status"] != "ok" else "failed", error=r["error"] or "no predictions written",
@@ -426,7 +426,7 @@ def run_dataset(path: str, cfg: BenchConfig) -> dict[str, pd.DataFrame]:
                         if "cell_type" in d and "true_phenotype" not in d:
                             d = d.rename(columns={"cell_type": "true_phenotype"})
                         name = f["variant"].split("/")[-1] if f["variant"] else base
-                        recs.append(("all", f["run"], NAN, dict(status="ok", runtime_s=t), d, None, str(f["path"]), NAN, "script", m.tier, name))
+                        recs.append(("all", f["run"], NAN, dict(status="ok", runtime_s=t, mem_mb=r.get("mem_mb")), d, None, str(f["path"]), NAN, "script", m.tier, name))
             else:                                                             # native
                 recs += [(*r, m.impl, m.tier) for r in native_runs(base, m)]
         except MethodUnavailable as e:

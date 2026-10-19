@@ -1,0 +1,18 @@
+cell_type,CD31 - vasculature:Cyc_19_ch_3,CD34 - vasculature:Cyc_20_ch_3,Cytokeratin - epithelia:Cyc_10_ch_2,Ki67 - proliferation:Cyc_5_ch_4,p53 - tumor suppressor:Cyc_3_ch_3,EGFR - signaling:Cyc_13_ch_3,Granzyme B - cytotoxicity:Cyc_13_ch_2,beta-catenin - Wnt signaling:Cyc_4_ch_4,PD-L1 - checkpoint:Cyc_5_ch_3,aSMA - smooth muscle:Cyc_11_ch_2,CD44 - stroma:Cyc_2_ch_2,Vimentin - cytoplasm:Cyc_8_ch_2,Podoplanin - lymphatics:Cyc_19_ch_4,CD45 - hematopoietic cells:Cyc_4_ch_2,CD15 - granulocytes:Cyc_14_ch_2,CD11b - macrophages:Cyc_10_ch_3,HLA-DR - MHC-II:Cyc_5_ch_2,CD20 - B cells:Cyc_8_ch_3,CD11c - DCs:Cyc_12_ch_3,CD163 - macrophages:Cyc_17_ch_3,CD68 - macrophages:Cyc_18_ch_4,CD38 - multifunctional:Cyc_20_ch_4,CD138 - plasma cells:Cyc_21_ch_3,CD56 - NK cells:Cyc_10_ch_4,CD57 - NK cells:Cyc_17_ch_4,CD3 - T cells:Cyc_16_ch_4,CD7 - T cells:Cyc_16_ch_3,CD8 - cytotoxic T cells:Cyc_3_ch_2,FOXP3 - regulatory T cells:Cyc_2_ch_3,CD4 - T helper cells:Cyc_6_ch_3,CD45RO - memory cells:Cyc_18_ch_3
+vasculature,1,1,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+tumor cells,,,1,1,1,1,1,1,1,,,,,,,,,,,,,,,,,,,,,,
+smooth muscle,,,,,,,,,,1,,,,,,,,,,,,,,,,,,,,,
+stroma,,,,,,,,,,,1,1,,,,,,,,,,,,,,,,,,,
+lymphatics,,,,,,,,,,,,,1,1,,,,,,,,,,,,,,,,,
+immune cells,,,,,,,,,,,,,,1,,,,,,,,,,,,,,,,,
+granulocytes,,,,,,,,,,,,,,1,1,1,,,,,,,,,,,,,,,
+B cells,,,,,,,,,,,,,,1,,,1,1,,,,,,,,,,,,,
+CD11c+ DCs,,,,,,,,,,,,,,1,,,1,,1,,,,,,,,,,,,
+macrophages,,,,,,,,,,,,,,1,,,,,,1,1,,,,,,,,,,
+plasma cells,,,,,,,,,,,,,,1,,,,,,,,1,1,,,,,,,,
+NK cells,,,,,,,,,,,,,,1,,,,,,,,,,1,1,,,,,,
+CD3+ T cells,,,,,,,,,,,,,,1,,,,,,,,,,,,1,1,,,,
+CD8+ T cells,,,,,,,,,,,,,,1,,,,,,,,,,,,1,1,1,,,
+Tregs,,,,,,,,,,,,,,1,,,,,,,,,,,,1,1,,1,1,
+CD4+ T cells,,,,,,,,,,,,,,1,,,,,,,,,,,,1,1,,,1,
+CD4+ T cells CD45RO+,,,,,,,,,,,,,,1,,,,,,,,,,,,1,1,,,1,1

@@ -273,8 +273,32 @@ def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> 
     gpu = _gpu_env()
     LOG.info("running: %s  (cwd %s, timeout %s%s)", " ".join(cmd)[:700], cwd, f"{timeout:.0f}s" if timeout else "none",
              f", GPU {gpu['CUDA_VISIBLE_DEVICES']}" if gpu else "")
+    peak, stop = [0.0], threading.Event()
+
+    def watch(pid):              # peak resident memory of the script and everything it spawned (R workers, dataloaders ...)
+        try:
+            import psutil
+            root = psutil.Process(pid)
+            while not stop.is_set():
+                try:
+                    peak[0] = max(peak[0], sum(x.memory_info().rss for x in [root, *root.children(recursive=True)]) / 2**20)
+                except psutil.Error:
+                    pass
+                stop.wait(2.0)
+        except Exception:        # psutil missing: memory stays blank
+            pass
     try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout or None, env={**os.environ, **gpu})
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, **gpu})
+        threading.Thread(target=watch, args=(proc.pid,), daemon=True).start()
+        try:
+            o, e = proc.communicate(timeout=timeout or None)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        finally:
+            stop.set()
+        p = subprocess.CompletedProcess(cmd, proc.returncode, o, e)
         if log is not None:                  # the script's full output is kept for every run, not only failures
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text("$ " + " ".join(cmd) + f"\nexit code {p.returncode}\n\n--- stderr ---\n{p.stderr or ''}\n--- stdout ---\n{p.stdout or ''}", encoding="utf-8")
@@ -292,6 +316,7 @@ def _run(cmd: list[str], cwd: Path, timeout: float, log: Path | None = None) -> 
         LOG.warning("not found: %s", e.filename or cmd[0])
         out.update(status="skipped", error=f"{e.filename or cmd[0]} not found")
     out["runtime_s"] = time.perf_counter() - t0
+    out["mem_mb"] = round(peak[0], 1) if peak[0] else None
     return out
 
 
