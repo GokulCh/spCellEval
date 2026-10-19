@@ -1,5 +1,5 @@
 #!/bin/bash
-# WIDE variant of run_final.sbatch: all methods start at once on a bigger allocation (64 CPUs, 2 GPUs). Edit the #SBATCH lines to what your
+# WIDE variant of run_final.sbatch: all methods start at once on a bigger allocation (64 CPUs, 1 GPU). Edit the #SBATCH lines to what your
 # node allows; keep JOBS x THREADS <= CPUs. The run then takes about as long as the slowest method (Starling) instead of the sum of many.
 # The full benchmark on crc_tma: every method (heavy ones included) with the tuned parameters from slurm/tune_light.sbatch.
 # Methods that were not tuned (Scyan, Astir, TACIT, Starling, MAPS, Stellar, Tribus) keep the shipped settings in the same file.
@@ -18,7 +18,7 @@
 #SBATCH --mem=400G
 #SBATCH --time=48:00:00
 #SBATCH --partition=gpu-a100
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 
 set -eo pipefail
 
